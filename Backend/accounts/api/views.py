@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 User = get_user_model()
 load_dotenv()
 
-
 def exchange_code_for_tokens(code):
     data = {
         "code": code,
