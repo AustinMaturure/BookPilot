@@ -1,9 +1,9 @@
 
+
 import { useState } from "react";
-import Position from "../components/position";
 
 
-export default function Books() {
+export default function Position() {
 
   
 
@@ -23,8 +23,8 @@ export default function Books() {
         
     </div>
 
-    <div className="rounded-3xl bg-neutral-100 w-full h-[80vh] mt-6 relative">
-        <Position/>
+    <div className="rounded-3xl bg-neutral-100 w-full h-[80vh] mt-6">
+
 
     </div>
 
