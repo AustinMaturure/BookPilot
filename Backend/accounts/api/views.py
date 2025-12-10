@@ -5,15 +5,18 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 import requests as http
+import os
+from dotenv import load_dotenv
 
 User = get_user_model()
+load_dotenv()
 
 
 def exchange_code_for_tokens(code):
     data = {
         "code": code,
-        "client_id": "332284226702-q2ehoksvf3mvtkh8hv4l9tfajj2h49qi.apps.googleusercontent.com",
-        "client_secret": "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",
+        "client_id": os.getenv("CLIENT_ID"),
+        "client_secret": os.getenv("CLIENT_SECRET"),
         "grant_type": "authorization_code",
         "redirect_uri": "postmessage"
     }
