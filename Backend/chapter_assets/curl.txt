@@ -1,0 +1,34 @@
+Artificial Intelligence (AI) is essentially a computer system built to simulate human intelligence. Its core goal is to enable machines to perform cognitive functions we typically associate with humans, such as learning, reasoning, problem-solving, perception, and language comprehension.
+
+We categorize AI into several forms, often based on their capabilities and sophistication:
+
+1. Narrow (or Weak) AI
+This is the only type of AI we have successfully created so far. Narrow AI is designed and trained to perform a single, specific task. It operates within a predefined range and cannot perform tasks beyond its programming. Examples include:
+
+Virtual assistants (like Siri or Alexa).
+
+Facial recognition software.
+
+The AI that powers recommendation engines (Netflix, Amazon).
+
+Deep Blue, the IBM chess program that beat a world champion.
+
+2. General (or Strong) AI (AGI)
+Artificial General Intelligence (AGI) refers to a machine with the capacity to understand, learn, and apply its intelligence to solve any problem that a human being can. It possesses consciousness, self-awareness, and cognitive abilities across a wide variety of domains. AGI does not currently exist.
+
+3. Superintelligence (ASI)
+Artificial Superintelligence (ASI) would surpass human intellect in virtually every aspect—scientific creativity, general wisdom, and social skills. ASI would not only be able to mimic human intelligence but surpass it significantly. This is purely hypothetical.
+
+Beyond the capability categories above, AI also manifests in functional forms:
+
+Reactive Machines: The oldest type. They don't have memory and can only react to the present situation (e.g., Deep Blue).
+
+Limited Memory: Most modern AI systems fall here. They can look into the recent past to make decisions (e.g., self-driving cars track the speed and distance of other cars).
+
+Theory of Mind: A hypothetical next level, where AI could understand human emotions, beliefs, and thoughts.
+
+Self-Awareness: The final, theoretical stage, where AI develops consciousness and self-awareness.
+
+The Layman's Definition:
+
+Think of AI as a very clever calculator or a robot assistant. It's excellent at specific jobs—like recognizing a cat in a photo (Narrow AI)—but it can't suddenly decide to learn how to cook a meal and file your taxes (General AI).

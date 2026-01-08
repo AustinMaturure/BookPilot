@@ -9,9 +9,18 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+from pilot.api.serializers import BookSerializer, CommentSerializer, ContentChangeSerializer
+from pilot.models import Book, Chapter, Section, TalkingPoint, UserContext, ChapterAsset, Comment, BookCollaborator, ContentChange, CollaborationState
+from pilot.api.checks import run_book_checks
 
-from pilot.api.serializers import BookSerializer
-from pilot.models import Book, Chapter, Section, TalkingPoint, UserContext, ChapterAsset
+
+def user_has_book_access(user, book):
+    """Check if user is the book owner or a collaborator."""
+    if book.user == user:
+        return True
+    return BookCollaborator.objects.filter(book=book, user=user).exists()
+
 
 def extract_text_from_file(asset):
     """Extract text content from uploaded file based on file type."""
@@ -356,12 +365,38 @@ Return only the follow-up question, nothing else."""
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_books(request):
-    """Return all books for the current user with nested chapters/sections/talking points."""
-    books = Book.objects.prefetch_related(
+    """Return all books for the current user (owned and collaborated) with nested chapters/sections/talking points."""
+    # Get books owned by user
+    owned_books = Book.objects.prefetch_related(
         "chapters__sections__talking_points"
-    ).filter(user=request.user).order_by("-id")
-    data = BookSerializer(books, many=True).data
-    return Response(data, status=status.HTTP_200_OK)
+    ).filter(user=request.user)
+    
+    # Get books where user is a collaborator
+    collaborated_books = Book.objects.prefetch_related(
+        "chapters__sections__talking_points"
+    ).filter(collaborators__user=request.user)
+    
+    # Combine and remove duplicates
+    all_books = (owned_books | collaborated_books).distinct().order_by("-id")
+    
+    # Serialize with collaboration info
+    books_data = []
+    for book in all_books:
+        book_data = BookSerializer(book).data
+        # Add collaboration info
+        is_owner = book.user == request.user
+        if not is_owner:
+            collaborator = BookCollaborator.objects.filter(book=book, user=request.user).first()
+            book_data["is_collaboration"] = True
+            book_data["collaborator_role"] = collaborator.role if collaborator else "commenter"
+            book_data["owner_name"] = book.user.first_name or book.user.username or book.user.email.split("@")[0]
+        else:
+            book_data["is_collaboration"] = False
+            book_data["collaborator_role"] = None
+            book_data["owner_name"] = None
+        books_data.append(book_data)
+    
+    return Response(books_data, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -377,14 +412,31 @@ def create_book(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_book(request, pk: int):
-    """Return a single book by id with nested data (only if owned by user)."""
+    """Return a single book by id with nested data (only if owned by user or user is a collaborator)."""
     try:
         book = Book.objects.prefetch_related(
             "chapters__sections__talking_points"
-        ).get(pk=pk, user=request.user)
+        ).get(pk=pk)
     except Book.DoesNotExist:
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check if user has access (owner or collaborator)
+    if not user_has_book_access(request.user, book):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    
     data = BookSerializer(book).data
+    
+    # Add collaboration info
+    is_owner = book.user == request.user
+    if not is_owner:
+        collaborator = BookCollaborator.objects.filter(book=book, user=request.user).first()
+        data["is_collaboration"] = True
+        data["collaborator_role"] = collaborator.role if collaborator else "commenter"
+        data["owner_name"] = book.user.first_name or book.user.username or book.user.email.split("@")[0]
+    else:
+        data["is_collaboration"] = False
+        data["collaborator_role"] = None
+        data["owner_name"] = None
     
     # Add user contexts to response
     contexts = UserContext.objects.filter(book=book).order_by("-created_at")
@@ -687,6 +739,549 @@ def list_chapter_assets(request):
         )
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def ask_chat_question(request):
+    """Answer questions about a talking point using AI."""
+    book_id = request.data.get("book_id")
+    talking_point_id = request.data.get("talking_point_id")
+    question = request.data.get("question", "").strip()
+    highlighted_text = request.data.get("highlighted_text", "").strip()
+
+    if not book_id or not talking_point_id or not question:
+        return Response(
+            {"detail": "book_id, talking_point_id, and question are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        talking_point = TalkingPoint.objects.select_related("section__chapter__book").get(
+            pk=talking_point_id, section__chapter__book__user=request.user
+        )
+        book = talking_point.section.chapter.book
+
+        if book.id != book_id:
+            return Response(
+                {"detail": "Talking point does not belong to this book"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Build context for the chat
+        context_parts = []
+        context_parts.append(f"Talking Point: {talking_point.text or 'Untitled'}")
+        
+        if talking_point.content:
+            # Strip HTML tags for context
+            import re
+            clean_content = re.sub(r'<[^>]+>', '', talking_point.content)
+            context_parts.append(f"\nCurrent Content:\n{clean_content}")
+        
+        if highlighted_text:
+            context_parts.append(f"\nUser highlighted this text:\n\"{highlighted_text}\"")
+            context_parts.append("\nThe user's question is specifically about this highlighted text.")
+
+        if book.core_topic:
+            context_parts.append(f"\nBook Core Topic: {book.core_topic}")
+        if book.audience:
+            context_parts.append(f"Target Audience: {book.audience}")
+
+        context_text = "\n".join(context_parts)
+
+        prompt = f"""You are a helpful writing assistant helping an author with their book. Answer the user's question about the current talking point.
+
+Context:
+{context_text}
+
+User's Question: {question}
+
+Provide a helpful, concise, and actionable answer. If the question is about the highlighted text, focus your answer on that specific section. Be encouraging and constructive."""
+
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a helpful writing assistant. Provide clear, actionable feedback and answers."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=500,
+        )
+
+        response_text = completion.choices[0].message.content.strip()
+
+        return Response(
+            {"response": response_text},
+            status=status.HTTP_200_OK,
+        )
+
+    except TalkingPoint.DoesNotExist:
+        return Response(
+            {"detail": "Talking point not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    except Exception as exc:
+        print("OPENAI ERROR (ask_chat_question):", exc)
+        return Response(
+            {"detail": str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def quick_text_action(request):
+    """Apply quick actions (shorten, expand, give example) to selected text."""
+    book_id = request.data.get("book_id")
+    talking_point_id = request.data.get("talking_point_id")
+    selected_text = request.data.get("selected_text", "").strip()
+    action = request.data.get("action")  # "shorten", "expand", "give_example"
+
+    if not book_id or not talking_point_id or not selected_text or not action:
+        return Response(
+            {"detail": "book_id, talking_point_id, selected_text, and action are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if action not in ["shorten", "expand", "give_example"]:
+        return Response(
+            {"detail": "action must be one of: shorten, expand, give_example"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        talking_point = TalkingPoint.objects.select_related("section__chapter__book").get(
+            pk=talking_point_id, section__chapter__book__user=request.user
+        )
+        book = talking_point.section.chapter.book
+
+        if book.id != book_id:
+            return Response(
+                {"detail": "Talking point does not belong to this book"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Build context
+        context_parts = []
+        if book.core_topic:
+            context_parts.append(f"Book Core Topic: {book.core_topic}")
+        if book.audience:
+            context_parts.append(f"Target Audience: {book.audience}")
+        if talking_point.content:
+            import re
+            clean_content = re.sub(r'<[^>]+>', '', talking_point.content)
+            context_parts.append(f"\nFull Content Context:\n{clean_content}")
+
+        context_text = "\n".join(context_parts) if context_parts else ""
+
+        # Build action-specific prompts
+        if action == "shorten":
+            prompt = f"""You are a professional book editor. The user wants to shorten the following selected text while maintaining its core meaning and impact.
+
+{context_text}
+
+Selected text to shorten:
+"{selected_text}"
+
+Provide a shortened version that:
+1. Maintains the core message and meaning
+2. Is more concise and impactful
+3. Removes unnecessary words without losing important information
+4. Flows naturally
+
+Return ONLY the shortened text, nothing else."""
+        
+        elif action == "expand":
+            prompt = f"""You are a professional book writer. The user wants to expand the following selected text with more detail and depth.
+
+{context_text}
+
+Selected text to expand:
+"{selected_text}"
+
+Provide an expanded version that:
+1. Adds more detail, depth, and context
+2. Maintains the original meaning and tone
+3. Provides additional insights or explanations
+4. Flows naturally and is well-written
+
+Return ONLY the expanded text, nothing else."""
+        
+        elif action == "give_example":
+            prompt = f"""You are a professional book writer. The user wants you to add a concrete example to illustrate the following selected text.
+
+{context_text}
+
+Selected text that needs an example:
+"{selected_text}"
+
+Provide the original text followed by a concrete, relevant example that illustrates the point. The example should:
+1. Be specific and concrete (not abstract)
+2. Be relevant to the book's topic and audience
+3. Clearly illustrate the point being made
+4. Be well-written and engaging
+
+Return the text in this format:
+[Original text]
+
+For example, [concrete example that illustrates the point]
+
+Return ONLY the formatted text, nothing else."""
+
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a professional book editor and writer. Provide clear, well-written text modifications."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=500,
+        )
+
+        modified_text = completion.choices[0].message.content.strip()
+
+        return Response(
+            {"modified_text": modified_text},
+            status=status.HTTP_200_OK,
+        )
+
+    except TalkingPoint.DoesNotExist:
+        return Response(
+            {"detail": "Talking point not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    except Exception as exc:
+        print("OPENAI ERROR (quick_text_action):", exc)
+        return Response(
+            {"detail": str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def comments_list_create(request):
+    """List comments for a talking point or create a new comment."""
+    talking_point_id = request.query_params.get("talking_point_id") or request.data.get("talking_point_id")
+    
+    if not talking_point_id:
+        return Response(
+            {"detail": "talking_point_id is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        talking_point = TalkingPoint.objects.select_related("section__chapter__book").get(pk=talking_point_id)
+        book = talking_point.section.chapter.book
+        
+        # Check if user has access (owner or collaborator)
+        if not user_has_book_access(request.user, book):
+            return Response(
+                {"detail": "You don't have access to this book"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    except TalkingPoint.DoesNotExist:
+        return Response(
+            {"detail": "Talking point not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if request.method == "GET":
+        comments = Comment.objects.filter(talking_point=talking_point).select_related("user")
+        serializer = CommentSerializer(comments, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    elif request.method == "POST":
+        # Determine comment type based on user relationship to book
+        is_owner = book.user == request.user
+        is_collaborator = BookCollaborator.objects.filter(book=book, user=request.user).exists()
+        
+        comment_type = "collaborator" if (is_collaborator and not is_owner) else "user"
+        
+        serializer = CommentSerializer(data={
+            **request.data,
+            "talking_point": talking_point_id,
+            "user": request.user.id,
+            "comment_type": comment_type,
+        })
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["PUT", "DELETE"])
+@permission_classes([IsAuthenticated])
+def comment_detail(request, comment_id):
+    """Update or delete a comment."""
+    try:
+        comment = Comment.objects.select_related("talking_point__section__chapter__book", "user").get(pk=comment_id)
+        book = comment.talking_point.section.chapter.book
+        
+        # Check if user has access to the book
+        if not user_has_book_access(request.user, book):
+            return Response(
+                {"detail": "You don't have access to this book"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        
+        # Only allow users to edit/delete their own comments (or book owner can delete any)
+        if request.method in ["PUT", "DELETE"]:
+            if comment.user != request.user and book.user != request.user:
+                return Response(
+                    {"detail": "You can only modify your own comments"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+    except Comment.DoesNotExist:
+        return Response(
+            {"detail": "Comment not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if request.method == "PUT":
+        serializer = CommentSerializer(comment, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == "DELETE":
+        comment.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def chat_with_changes(request):
+    """Chat with AI about a talking point and optionally apply changes."""
+    book_id = request.data.get("book_id")
+    talking_point_id = request.data.get("talking_point_id")
+    question = request.data.get("question", "").strip()
+    highlighted_text = request.data.get("highlighted_text", "").strip()
+    apply_changes = request.data.get("apply_changes", False)
+
+    if not book_id or not talking_point_id or not question:
+        return Response(
+            {"detail": "book_id, talking_point_id, and question are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        talking_point = TalkingPoint.objects.select_related("section__chapter__book").get(
+            pk=talking_point_id, section__chapter__book__user=request.user
+        )
+        book = talking_point.section.chapter.book
+
+        if book.id != book_id:
+            return Response(
+                {"detail": "Talking point does not belong to this book"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Build context for the chat
+        context_parts = []
+        context_parts.append(f"Talking Point: {talking_point.text or 'Untitled'}")
+        
+        if talking_point.content:
+            import re
+            clean_content = re.sub(r'<[^>]+>', '', talking_point.content)
+            context_parts.append(f"\nCurrent Content:\n{clean_content}")
+        
+        if highlighted_text:
+            context_parts.append(f"\nUser highlighted this text:\n\"{highlighted_text}\"")
+            context_parts.append("\nThe user's question is specifically about this highlighted text.")
+
+        if book.core_topic:
+            context_parts.append(f"\nBook Core Topic: {book.core_topic}")
+        if book.audience:
+            context_parts.append(f"Target Audience: {book.audience}")
+
+        context_text = "\n".join(context_parts)
+
+        # Determine if user wants to make changes
+        if apply_changes:
+            prompt = f"""You are a helpful writing assistant helping an author with their book. The user wants to make changes to the content based on their question.
+
+Context:
+{context_text}
+
+User's Question: {question}
+
+Based on the user's question, provide an improved version of the content. If the question is about highlighted text, focus on improving that specific section. Return ONLY the improved content, maintaining the same structure and format. Do not include explanations or meta-commentary."""
+        else:
+            prompt = f"""You are a helpful writing assistant helping an author with their book. Answer the user's question about the current talking point.
+
+Context:
+{context_text}
+
+User's Question: {question}
+
+Provide a helpful, concise, and actionable answer. If the question is about the highlighted text, focus your answer on that specific section. Be encouraging and constructive."""
+
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a helpful writing assistant. Provide clear, actionable feedback and answers."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=1000 if apply_changes else 500,
+        )
+
+        response_text = completion.choices[0].message.content.strip()
+
+        # If applying changes, update the talking point content
+        if apply_changes:
+            talking_point.content = response_text
+            talking_point.save()
+
+        return Response(
+            {"response": response_text, "applied_changes": apply_changes},
+            status=status.HTTP_200_OK,
+        )
+
+    except TalkingPoint.DoesNotExist:
+        return Response(
+            {"detail": "Talking point not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    except Exception as exc:
+        print("OPENAI ERROR (chat_with_changes):", exc)
+        return Response(
+            {"detail": str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def book_collaborators(request, book_id):
+    """List collaborators for a book or invite a new collaborator."""
+    try:
+        book = Book.objects.get(pk=book_id)
+        
+        # Only book owner can manage collaborators
+        if book.user != request.user:
+            return Response(
+                {"detail": "Only the book owner can manage collaborators"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    except Book.DoesNotExist:
+        return Response(
+            {"detail": "Book not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if request.method == "GET":
+        collaborators = BookCollaborator.objects.filter(book=book).select_related("user", "invited_by")
+        data = []
+        for collab in collaborators:
+            data.append({
+                "id": collab.id,
+                "user_id": collab.user.id,
+                "user_email": collab.user.email,
+                "user_name": collab.user.first_name or collab.user.username or collab.user.email.split("@")[0],
+                "role": collab.role,
+                "invited_by": collab.invited_by.email if collab.invited_by else None,
+                "created_at": collab.created_at,
+            })
+        return Response(data, status=status.HTTP_200_OK)
+
+    elif request.method == "POST":
+        email = request.data.get("email", "").strip()
+        role = request.data.get("role", "commenter")
+        
+        if not email:
+            return Response(
+                {"detail": "email is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        if role not in ["editor", "viewer", "commenter"]:
+            return Response(
+                {"detail": "role must be one of: editor, viewer, commenter"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        try:
+            user = User.objects.get(email=email)
+            
+            # Don't allow inviting the book owner
+            if user == book.user:
+                return Response(
+                    {"detail": "Cannot invite the book owner as a collaborator"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            
+            # Create or update collaborator
+            collaborator, created = BookCollaborator.objects.get_or_create(
+                book=book,
+                user=user,
+                defaults={
+                    "role": role,
+                    "invited_by": request.user,
+                }
+            )
+            
+            if not created:
+                # Update existing collaborator
+                collaborator.role = role
+                collaborator.save()
+            
+            return Response({
+                "id": collaborator.id,
+                "user_id": collaborator.user.id,
+                "user_email": collaborator.user.email,
+                "user_name": collaborator.user.first_name or collaborator.user.username or collaborator.user.email.split("@")[0],
+                "role": collaborator.role,
+                "created": created,
+            }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+            
+        except User.DoesNotExist:
+            return Response(
+                {"detail": f"User with email {email} not found. They need to sign up first."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def remove_collaborator(request, book_id, collaborator_id):
+    """Remove a collaborator from a book."""
+    try:
+        book = Book.objects.get(pk=book_id)
+        
+        # Only book owner can remove collaborators
+        if book.user != request.user:
+            return Response(
+                {"detail": "Only the book owner can remove collaborators"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        
+        collaborator = BookCollaborator.objects.get(pk=collaborator_id, book=book)
+        collaborator.delete()
+        
+        return Response(status=status.HTTP_204_NO_CONTENT)
+        
+    except Book.DoesNotExist:
+        return Response(
+            {"detail": "Book not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    except BookCollaborator.DoesNotExist:
+        return Response(
+            {"detail": "Collaborator not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+
 # ------- CRUD for outline elements -------
 
 
@@ -831,11 +1426,14 @@ def create_talking_point(request, section_id: int):
 @permission_classes([IsAuthenticated])
 def update_talking_point(request, tp_id: int):
     try:
-        tp = TalkingPoint.objects.select_related("section__chapter__book").get(
-            pk=tp_id, section__chapter__book__user=request.user
-        )
+        tp = TalkingPoint.objects.select_related("section__chapter__book").get(pk=tp_id)
     except TalkingPoint.DoesNotExist:
         return Response({"detail": "Talking point not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # Check if user has access to the book (owner or collaborator)
+    book = tp.section.chapter.book
+    if not user_has_book_access(request.user, book):
+        return Response({"detail": "You do not have permission to update this talking point"}, status=status.HTTP_403_FORBIDDEN)
 
     text = request.data.get("text")
     order = request.data.get("order")
@@ -856,13 +1454,286 @@ def update_talking_point(request, tp_id: int):
 @permission_classes([IsAuthenticated])
 def delete_talking_point(request, tp_id: int):
     try:
-        tp = TalkingPoint.objects.select_related("section__chapter__book").get(
-            pk=tp_id, section__chapter__book__user=request.user
-        )
+        tp = TalkingPoint.objects.select_related("section__chapter__book").get(pk=tp_id)
     except TalkingPoint.DoesNotExist:
         return Response({"detail": "Talking point not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check if user has access to the book (owner or collaborator)
+    book = tp.section.chapter.book
+    if not user_has_book_access(request.user, book):
+        return Response({"detail": "You do not have permission to delete this talking point"}, status=status.HTTP_403_FORBIDDEN)
+    
     book_id = tp.section.chapter.book_id
     tp.delete()
     data = _serialized_book(book_id, request.user)
     return Response(data, status=status.HTTP_200_OK)
+
+
+
+@api_view(["POST"])
+def create_suggestion(request):
+    ContentChange.objects.create(
+        talking_point_id=request.data["talking_point_id"],
+        user=request.user,
+        step_json=request.data["step_json"],
+    )
+    return Response(status=201)
+
+@api_view(["POST"])
+def approve_suggestion(request, pk):
+    change = get_object_or_404(ContentChange, pk=pk)
+    change.status = "approved"
+    change.save()
+    return Response(status=200)
+
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def content_changes_list_create(request, talking_point_id: int):
+    """List all changes for a talking point or create a new change."""
+    try:
+        tp = TalkingPoint.objects.select_related("section__chapter__book").get(pk=talking_point_id)
+        book = tp.section.chapter.book
+    except TalkingPoint.DoesNotExist:
+        return Response({"detail": "Talking point not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check access
+    if not user_has_book_access(request.user, book):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    if request.method == "GET":
+        # List all changes for this talking point
+        changes = ContentChange.objects.filter(talking_point=tp).select_related("user", "approved_by")
+        
+        # Filter by status if provided
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            changes = changes.filter(status=status_filter)
+        
+        serializer = ContentChangeSerializer(changes, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    elif request.method == "POST":
+        # Create a new suggestion/change
+        # Only collaborators (not owners) can create suggestions
+        if book.user == request.user:
+            return Response(
+                {"detail": "Book owners cannot create pending changes. Edit directly."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check if user is a collaborator with edit permissions
+        collaborator = BookCollaborator.objects.filter(book=book, user=request.user).first()
+        if not collaborator or collaborator.role == "viewer":
+            return Response(
+                {"detail": "You don't have permission to make changes"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # CRITICAL: Step-native system - step_json is the ONLY field
+        step_json = request.data.get("step_json")
+        comment = request.data.get("comment", "")
+        
+        if not step_json:
+            return Response(
+                {"detail": "step_json is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Create the change - ONLY step_json, nothing else
+        change = ContentChange.objects.create(
+            talking_point=tp,
+            user=request.user,
+            step_json=step_json,
+            comment=comment,
+            status="pending"
+        )
+        
+        serializer = ContentChangeSerializer(change)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def run_book_checks_endpoint(request, book_id: int):
+    """Run book checks on all Talking Points."""
+    try:
+        book = Book.objects.prefetch_related(
+            'chapters__sections__talking_points'
+        ).get(pk=book_id)
+    except Book.DoesNotExist:
+        return Response({"detail": "Book not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check access
+    if not user_has_book_access(request.user, book):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Run checks (read-only, no mutations)
+    results = run_book_checks(book)
+    
+    return Response(results, status=status.HTTP_200_OK)
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def content_change_detail(request, change_id: int):
+    """Approve, reject, or delete a content change."""
+    try:
+        change = ContentChange.objects.select_related(
+            "talking_point__section__chapter__book", "user", "approved_by"
+        ).get(pk=change_id)
+        book = change.talking_point.section.chapter.book
+    except ContentChange.DoesNotExist:
+        return Response({"detail": "Change not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check access
+    if not user_has_book_access(request.user, book):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    if request.method == "PATCH":
+        # Only book owner can approve/reject
+        if book.user != request.user:
+            return Response(
+                {"detail": "Only the book owner can approve or reject changes"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        new_status = request.data.get("status")
+        if new_status not in ["approved", "rejected"]:
+            return Response(
+                {"detail": "status must be 'approved' or 'rejected'"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # FIX: Prevent double application - check if already approved/rejected
+        if change.status == new_status:
+            return Response(
+                {"detail": f"This suggestion has already been {change.status}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        change.status = new_status
+        if new_status == "approved":
+            change.approved_by = request.user
+            from django.utils import timezone
+            change.approved_at = timezone.now()
+            # CRITICAL: Backend ONLY updates status - NEVER touches content
+            # Frontend applies steps directly using ProseMirror
+            # This is the 100% step-native architecture
+        else:
+            change.approved_by = None
+            change.approved_at = None
+        
+        change.save()
+        serializer = ContentChangeSerializer(change)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    elif request.method == "DELETE":
+        # User can delete their own pending changes, owner can delete any
+        if change.user != request.user and book.user != request.user:
+            return Response(
+                {"detail": "You can only delete your own changes"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        change.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def collab_get_state(request, talking_point_id: int):
+    """Get the initial collaboration state for a talking point."""
+    try:
+        tp = TalkingPoint.objects.select_related("section__chapter__book").get(pk=talking_point_id)
+        book = tp.section.chapter.book
+    except TalkingPoint.DoesNotExist:
+        return Response({"detail": "Talking point not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check access
+    if not user_has_book_access(request.user, book):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Get or create collaboration state
+    collab_state, created = CollaborationState.objects.get_or_create(talking_point=tp)
+    
+    return Response({
+        "version": collab_state.version,
+        "talking_point_id": talking_point_id,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["POST", "GET"])
+@permission_classes([IsAuthenticated])
+def collab_receive_steps(request, talking_point_id: int):
+    """
+    Collaborative editing authority endpoint.
+    POST: Receive steps from a client
+    GET: Get steps since a given version
+    """
+    try:
+        tp = TalkingPoint.objects.select_related("section__chapter__book").get(pk=talking_point_id)
+        book = tp.section.chapter.book
+    except TalkingPoint.DoesNotExist:
+        return Response({"detail": "Talking point not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check access
+    if not user_has_book_access(request.user, book):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Get or create collaboration state
+    collab_state, created = CollaborationState.objects.get_or_create(talking_point=tp)
+    
+    if request.method == "POST":
+        # Receive steps from client
+        version = request.data.get("version")
+        steps = request.data.get("steps", [])  # Array of serialized steps
+        client_id = request.data.get("clientID")
+        
+        if version is None or client_id is None:
+            return Response({"detail": "version and clientID are required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if version matches
+        if version != collab_state.version:
+            return Response({
+                "detail": "Version mismatch",
+                "current_version": collab_state.version
+            }, status=status.HTTP_409_CONFLICT)
+        
+        # Add steps to state
+        current_steps = collab_state.get_steps()
+        current_client_ids = collab_state.get_client_ids()
+        
+        current_steps.extend(steps)
+        current_client_ids.extend([client_id] * len(steps))
+        
+        collab_state.set_steps(current_steps)
+        collab_state.set_client_ids(current_client_ids)
+        collab_state.version = len(current_steps)
+        collab_state.save()
+        
+        return Response({
+            "success": True,
+            "version": collab_state.version
+        }, status=status.HTTP_200_OK)
+    
+    elif request.method == "GET":
+        # Get steps since a given version
+        since_version = int(request.query_params.get("since", 0))
+        
+        all_steps = collab_state.get_steps()
+        all_client_ids = collab_state.get_client_ids()
+        
+        steps_since = all_steps[since_version:]
+        client_ids_since = all_client_ids[since_version:]
+        
+        return Response({
+            "steps": steps_since,
+            "clientIDs": client_ids_since,
+            "version": collab_state.version
+        }, status=status.HTTP_200_OK)
+
+
+# DELETED: apply_all_approved_changes - step-native system, frontend applies steps directly
 
