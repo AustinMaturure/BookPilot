@@ -1,5 +1,4 @@
 import { useGoogleLogin } from "@react-oauth/google";
-import { jwtDecode } from "jwt-decode";
 import { googleLogin } from "../utils/api";
 import { useState } from "react";
 import logo from "../assets/image.png"

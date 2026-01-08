@@ -22,7 +22,7 @@ export default function ChapterAssetsPanel({
   onClose,
   bookId,
   chapterId,
-  chapterTitle,
+  chapterTitle: _chapterTitle,
   onGenerate,
 }: ChapterAssetsPanelProps) {
   const [assets, setAssets] = useState<ChapterAsset[]>([]);

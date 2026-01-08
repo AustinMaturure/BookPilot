@@ -35,7 +35,7 @@ export const ChangeTrackingExtension = Extension.create<ChangeTrackingOptions>({
           init() {
             return DecorationSet.empty;
           },
-          apply(tr, set, oldState, newState) {
+          apply(_tr, _set, _oldState, newState) {
             // Get pending changes from extension options
             const pendingChanges = extension.options.pendingChanges || [];
             const pending = pendingChanges.filter((c: any) => !c.status || c.status === "pending");
@@ -52,7 +52,6 @@ export const ChangeTrackingExtension = Extension.create<ChangeTrackingOptions>({
             doc.nodesBetween(0, doc.content.size, (node: any, pos: number) => {
               if (node.isText) {
                 const nodeText = node.text || "";
-                let normalizedOffset = normalizedText.length;
                 
                 for (let i = 0; i < nodeText.length; i++) {
                   const char = nodeText[i];
@@ -148,7 +147,7 @@ export const ChangeTrackingExtension = Extension.create<ChangeTrackingOptions>({
                     span.style.cssText = "background-color: #dcfce7; color: #16a34a; padding: 2px 4px; border-left: 2px solid #22c55e; border-radius: 2px; display: inline;";
                     span.setAttribute("data-change-type", "insertion");
                     span.setAttribute("data-change-id", change.id.toString());
-                    span.textContent = change.new_text;
+                    span.textContent = change.new_text || "";
                     return span;
                   });
                   decorations.push(widget);
@@ -170,7 +169,7 @@ export const ChangeTrackingExtension = Extension.create<ChangeTrackingOptions>({
                       span.style.cssText = "background-color: #dcfce7; color: #16a34a; padding: 2px 4px; border-left: 2px solid #22c55e; border-radius: 2px; margin-left: 4px; display: inline;";
                       span.setAttribute("data-change-type", "replacement-new");
                       span.setAttribute("data-change-id", change.id.toString());
-                      span.textContent = change.new_text;
+                      span.textContent = change.new_text || "";
                       return span;
                     });
                     decorations.push(newWidget);
@@ -189,7 +188,7 @@ export const ChangeTrackingExtension = Extension.create<ChangeTrackingOptions>({
             return this.getState(state);
           },
         },
-        appendTransaction(transactions, oldState, newState) {
+        appendTransaction(_transactions, _oldState, newState) {
           // Force recalculation when content or pending changes might have changed
           const pendingChanges = extension.options.pendingChanges || [];
           if (pendingChanges.length > 0) {

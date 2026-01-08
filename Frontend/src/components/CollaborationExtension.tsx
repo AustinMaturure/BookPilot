@@ -28,7 +28,7 @@ export const CollaborationExtension = Extension.create<CollaborationOptions>({
   addProseMirrorPlugins() {
     const extension = this;
     const clientID = generateClientID();
-    let pollInterval: NodeJS.Timeout | null = null;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
     let lastVersion = this.options.version;
 
     return [
@@ -61,11 +61,11 @@ export const CollaborationExtension = Extension.create<CollaborationOptions>({
                   // Deserialize and apply steps
                   const steps = data.steps.map((stepJson: any) => Step.fromJSON(schema, stepJson));
                   
-                  const tr = collab.receiveTransaction(
-                    editorView.state,
-                    steps,
-                    data.clientIDs
-                  );
+                  // Apply steps directly to the editor view
+                  const tr = editorView.state.tr;
+                  steps.forEach((step: any) => {
+                    tr.step(step);
+                  });
                   
                   editorView.dispatch(tr);
                   lastVersion = data.version;
@@ -99,13 +99,18 @@ export const CollaborationExtension = Extension.create<CollaborationOptions>({
       }),
       new Plugin({
         key: new PluginKey('collaborationSend'),
-        appendTransaction(transactions, oldState, newState) {
-          // Check if there are sendable steps
-          const sendable = collab.sendableSteps(newState);
+        appendTransaction(transactions, _oldState, newState) {
+          // Collect steps from transactions
+          const steps: Step[] = [];
+          transactions.forEach((tr) => {
+            if (tr.steps && tr.steps.length > 0) {
+              steps.push(...tr.steps);
+            }
+          });
 
-          if (sendable && sendable.steps.length > 0) {
+          if (steps.length > 0) {
             // Serialize steps
-            const serializedSteps = sendable.steps.map((step: any) => step.toJSON());
+            const serializedSteps = steps.map((step: any) => step.toJSON());
 
             // Send steps to server asynchronously
             (async () => {
@@ -119,7 +124,7 @@ export const CollaborationExtension = Extension.create<CollaborationOptions>({
                       'Authorization': `Token ${localStorage.getItem('auth_token')}`,
                     },
                     body: JSON.stringify({
-                      version: sendable.version,
+                      version: lastVersion,
                       steps: serializedSteps,
                       clientID: clientID,
                     }),

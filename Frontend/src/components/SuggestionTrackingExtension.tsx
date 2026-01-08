@@ -44,10 +44,9 @@ export const SuggestionTrackingExtension = Extension.create<SuggestionTrackingOp
               return value;
             }
 
-            // Extract steps, mapping, and selection from transaction
+            // Extract steps and mapping from transaction
             const steps = tr.steps || [];
             const mapping = tr.mapping;
-            const selection = tr.selection;
 
             // Call callback with transaction data
             if (steps.length > 0) {

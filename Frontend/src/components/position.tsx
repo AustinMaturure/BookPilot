@@ -152,7 +152,7 @@ export default function Position({
             setMessages((prev) => [...prev, { from: "AI", text: "Can you tell me a bit more about that? I'd love to understand this better." }]);
             setIsTyping(false);
           }
-        }).catch((error) => {
+        }).catch((_error) => {
           // Fallback on error
           setMessages((prev) => [...prev, { from: "AI", text: "Can you elaborate a bit more? I'd like to understand this better." }]);
           setIsTyping(false);
@@ -206,7 +206,7 @@ export default function Position({
             setMessages((prev) => [...prev, { from: "AI", text: "I'd love to hear a bit more detail on this. Can you expand on that?" }]);
             setIsTyping(false);
           }
-        }).catch((error) => {
+        }).catch((_error) => {
           setMessages((prev) => [...prev, { from: "AI", text: "Can you provide a bit more detail?" }]);
           setIsTyping(false);
         });

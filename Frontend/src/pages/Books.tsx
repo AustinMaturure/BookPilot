@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchBooks, createBook, fetchBook } from "../utils/api";
-import Background1 from "../assets/Branding/Background1.png"
 import background2 from "../assets/Branding/Log_in_background.png"
 
 type BookSummary = { 
