@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { createOutline, generateFollowupQuestion } from "../utils/api";
+import card2 from "../assets/Branding/Card2.png"
 
 type Message = { from: "AI" | "user"; text: string };
 type TalkingPoint = { id?: number; text: string; order?: number; content?: string };
@@ -395,78 +396,114 @@ export default function Position({
       </div>
 
       {/* Right Sidebar - Live Insights */}
-      <div className="w-80 bg-[#1a3a4a] border-l border-[#2d4a5a] p-6 overflow-y-auto">
-        <div className="flex items-center gap-2 mb-6">
-          <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
-          <h3 className="text-white font-bold text-lg">LIVE INSIGHTS</h3>
-        </div>
-
-        <h4 className="text-white font-semibold text-xl mb-6">{initialOutline?.title || "Book Bible"}</h4>
-
-        {/* Goal */}
-        <div className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span className="text-gray-400 text-sm font-medium">GOAL</span>
+      <div className="w-80 border-l border-[#2d4a5a] overflow-y-auto relative" style={{
+        backgroundImage: `url(${card2})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat'
+      }}>
+        {/* Pattern overlay */}
+        <div className="absolute inset-0 opacity-30" style={{
+          backgroundImage: `
+            radial-gradient(circle at 20% 30%, rgba(79, 209, 197, 0.3) 0%, transparent 50%),
+            radial-gradient(circle at 80% 70%, rgba(79, 209, 197, 0.2) 0%, transparent 50%),
+            linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+            linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px)
+          `,
+          backgroundSize: '100% 100%, 100% 100%, 20px 20px, 20px 20px',
+          backgroundPosition: '0 0, 0 0, 0 0, 0 0'
+        }} />
+        
+        <div className="relative z-10 p-6 relative">
+          {/* Header with green background */}
+          <div className=" rounded-t-xl  mb-6">
+            <div className="flex items-center gap-2 mb-2">
+              <svg className="w-5 h-5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              <h3 className="text-yellow-400 font-bold text-sm uppercase tracking-wide">LIVE INSIGHTS</h3>
+            </div>
+            <h4 className="text-white font-semibold text-md">{initialOutline?.title || "Book Bible"}</h4>
+            
           </div>
-          <div className="text-white text-3xl font-bold mb-2">{goal}</div>
-          <div className="w-full bg-[#2d4a5a] rounded-full h-2">
-            <div className="bg-[#4ade80] h-2 rounded-full" style={{ width: "20%" }} />
-          </div>
-        </div>
+         
+          
 
-        {/* Core Topic */}
-        <div className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-            </svg>
-            <span className="text-gray-400 text-sm font-medium">CORE TOPIC</span>
+          {/* Goal Card - Glossy Bubble */}
+          <div className="mb-4 backdrop-blur-md bg-white/10 rounded-xl p-4 border border-white/20 shadow-lg" style={{
+            background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%)',
+            boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37), inset 0 1px 0 0 rgba(255, 255, 255, 0.2)'
+          }}>
+            <div className="flex items-center gap-2 mb-3">
+              <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span className="text-gray-300 text-xs font-medium uppercase tracking-wide">GOAL</span>
+            </div>
+            <div className="text-white text-4xl font-bold mb-2">{goal}</div>
+            <div className="w-full bg-white/10 rounded-full h-2 backdrop-blur-sm">
+              <div className="bg-[#4ade80] h-2 rounded-full shadow-lg" style={{ width: "20%" }} />
+            </div>
           </div>
-          <p className="text-white text-sm leading-relaxed">{coreTopic}</p>
-        </div>
 
-        {/* Audience */}
-        <div className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-            </svg>
-            <span className="text-gray-400 text-sm font-medium">AUDIENCE</span>
+          {/* Core Topic Card - Glossy Bubble */}
+          <div className="mb-4 backdrop-blur-md bg-white/10 rounded-xl p-4 border border-white/20 shadow-lg" style={{
+            background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%)',
+            boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37), inset 0 1px 0 0 rgba(255, 255, 255, 0.2)'
+          }}>
+            <div className="flex items-center gap-2 mb-3">
+              <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+              <span className="text-gray-300 text-xs font-medium uppercase tracking-wide">CORE TOPIC</span>
+            </div>
+            <p className="text-white text-sm leading-relaxed">{coreTopic}</p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {audience.length > 0 ? (
-              audience.map((aud, idx) => (
-                <span
-                  key={idx}
-                  className={`px-3 py-3 rounded-lg text-xs font-medium ${
-                    idx === 0
-                      ? "bg-[#4ade80] text-[#0a1a2e]"
-                      : "bg-[#2d4a5a] text-gray-300"
-                  }`}
-                >
-                  {aud.charAt(0).toUpperCase() + aud.slice(1)}
-                </span>
-              ))
-            ) : (
-              <span className="text-gray-400 text-sm">Not yet defined</span>
-            )}
-          </div>
-        </div>
 
-        {/* Quote */}
-        <div className="pt-6 border-t border-[#2d4a5a]">
-          <div className="flex items-start gap-2">
-            <svg className="w-5 h-5 text-[#4ade80] shrink-0 mt-1" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M14.017 21v-7.391c0-5.704 3.731-9.57 9.064-9.57V3.055c-3.219.348-5.891 2.789-5.891 6.748v7.285h6.458V21h-9.631zm-14.017 0v-7.391c0-5.704 3.748-9.57 9.069-9.57V3.055c-3.219.348-5.89 2.789-5.89 6.748v7.285h6.453V21H0z" />
-            </svg>
-            <p className="text-gray-300 text-sm italic leading-relaxed">
-              "The garden that is finished is dead." - H.E. Bates
-            </p>
+          {/* Audience Card - Glossy Bubble */}
+          <div className="mb-4 backdrop-blur-md bg-white/10 rounded-xl p-4 border border-white/20 shadow-lg" style={{
+            background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%)',
+            boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37), inset 0 1px 0 0 rgba(255, 255, 255, 0.2)'
+          }}>
+            <div className="flex items-center gap-2 mb-3">
+              <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+              <span className="text-gray-300 text-xs font-medium uppercase tracking-wide">AUDIENCE</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {audience.length > 0 ? (
+                audience.map((aud, idx) => (
+                  <span
+                    key={idx}
+                    className={`px-3 py-2 rounded-lg text-xs font-medium backdrop-blur-sm ${
+                      idx === 0
+                        ? "bg-[#4ade80] text-[#0a1a2e] shadow-lg"
+                        : "bg-white/10 text-gray-200 border border-white/20"
+                    }`}
+                  >
+                    {aud.charAt(0).toUpperCase() + aud.slice(1)}
+                  </span>
+                ))
+              ) : (
+                <span className="text-gray-400 text-sm">Not yet defined</span>
+              )}
+            </div>
+          </div>
+
+          {/* Quote Card - Glossy Bubble */}
+          <div className="backdrop-blur-md bg-white/10 rounded-xl p-4 border border-white/20 shadow-lg" style={{
+            background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%)',
+            boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37), inset 0 1px 0 0 rgba(255, 255, 255, 0.2)'
+          }}>
+            <div className="flex items-start gap-2">
+              <svg className="w-5 h-5 text-[#4ade80] shrink-0 mt-1" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M14.017 21v-7.391c0-5.704 3.731-9.57 9.064-9.57V3.055c-3.219.348-5.891 2.789-5.891 6.748v7.285h6.458V21h-9.631zm-14.017 0v-7.391c0-5.704 3.748-9.57 9.069-9.57V3.055c-3.219.348-5.89 2.789-5.89 6.748v7.285h6.453V21H0z" />
+              </svg>
+              <p className="text-gray-200 text-sm italic leading-relaxed">
+                "The garden that is finished is dead." - H.E. Bates
+              </p>
+            </div>
           </div>
         </div>
       </div>

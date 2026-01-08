@@ -1,0 +1,118 @@
+/* Tiptap Editor Styles */
+.ProseMirror {
+  outline: none;
+  min-height: 300px;
+  padding: 24px;
+  line-height: 1.6;
+  color: #111827;
+}
+
+.ProseMirror p {
+  margin: 0.75em 0;
+}
+
+.ProseMirror p:first-child {
+  margin-top: 0;
+}
+
+.ProseMirror p:last-child {
+  margin-bottom: 0;
+}
+
+.ProseMirror h1 {
+  font-size: 2em;
+  font-weight: bold;
+  margin: 1em 0 0.5em 0;
+}
+
+.ProseMirror h2 {
+  font-size: 1.5em;
+  font-weight: bold;
+  margin: 0.83em 0 0.5em 0;
+}
+
+.ProseMirror h3 {
+  font-size: 1.17em;
+  font-weight: bold;
+  margin: 1em 0 0.5em 0;
+}
+
+.ProseMirror ul,
+.ProseMirror ol {
+  padding-left: 1.5em;
+  margin: 0.75em 0;
+}
+
+.ProseMirror li {
+  margin: 0.25em 0;
+}
+
+.ProseMirror a {
+  color: #2563eb;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ProseMirror a:hover {
+  color: #1d4ed8;
+}
+
+.ProseMirror img {
+  max-width: 100%;
+  height: auto;
+  margin: 1em 0;
+}
+
+.ProseMirror strong {
+  font-weight: 600;
+}
+
+.ProseMirror em {
+  font-style: italic;
+}
+
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: #9ca3af;
+  pointer-events: none;
+  height: 0;
+}
+
+/* Styles for pending changes in the editor */
+.ProseMirror .change-indicator.deletion,
+.ProseMirror [data-change-type="deletion"] {
+  background-color: #fee2e2 !important;
+  text-decoration: line-through !important;
+  color: #dc2626 !important;
+  padding: 2px 4px !important;
+  border-radius: 2px !important;
+}
+
+.ProseMirror .change-indicator.insertion,
+.ProseMirror [data-change-type="insertion"] {
+  background-color: #dcfce7 !important;
+  color: #16a34a !important;
+  padding: 2px 4px !important;
+  border-left: 2px solid #22c55e !important;
+  border-radius: 2px !important;
+}
+
+.ProseMirror .change-indicator.replacement-old,
+.ProseMirror [data-change-type="replacement-old"] {
+  background-color: #fee2e2 !important;
+  text-decoration: line-through !important;
+  color: #dc2626 !important;
+  padding: 2px 4px !important;
+  border-radius: 2px !important;
+}
+
+.ProseMirror .change-indicator.replacement-new,
+.ProseMirror [data-change-type="replacement-new"] {
+  background-color: #dcfce7 !important;
+  color: #16a34a !important;
+  padding: 2px 4px !important;
+  border-left: 2px solid #22c55e !important;
+  border-radius: 2px !important;
+  margin-left: 4px !important;
+}

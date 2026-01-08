@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react';
-import { getCurrentUser } from '../utils/api';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { getCurrentUser, logout } from '../utils/api';
 import logo from '../assets/Branding/BP_logo_white.png';
 
 export default function Navbar() {
     const [user, setUser] = useState<{ name?: string; email?: string } | null>(null);
     const [activeTab, setActiveTab] = useState('books');
+    const [showUserMenu, setShowUserMenu] = useState(false);
+    const navigate = useNavigate();
+    const location = useLocation();
 
     useEffect(() => {
         const loadUser = async () => {
@@ -16,24 +20,45 @@ export default function Navbar() {
         loadUser();
     }, []);
 
+    useEffect(() => {
+        // Sync active tab with current route
+        const navTabs = [
+            { id: 'books', path: '/' },
+            { id: 'marketing', path: '/marketing' },
+            { id: 'repurpose', path: '/repurpose' },
+            { id: 'analytics', path: '/analytics' },
+            { id: 'settings', path: '/settings' },
+        ];
+        
+        const currentTab = navTabs.find(tab => location.pathname === tab.path);
+        if (currentTab) {
+            setActiveTab(currentTab.id);
+        } else if (location.pathname.startsWith('/book/')) {
+            setActiveTab('books');
+        }
+    }, [location.pathname]);
+
     const handleLogout = () => {
         logout();
+        navigate('/');
         window.location.reload();
     };
 
     const navTabs = [
-        { id: 'books', label: 'Books' },
-        { id: 'marketing', label: 'Marketing' },
-        { id: 'repurpose', label: 'Repurpose' },
-        { id: 'analytics', label: 'Analytics' },
-        { id: 'settings', label: 'Settings' },
+        { id: 'books', label: 'Books', path: '/' },
+        { id: 'marketing', label: 'Marketing', path: '/marketing' },
+        { id: 'repurpose', label: 'Repurpose', path: '/repurpose' },
+        { id: 'analytics', label: 'Analytics', path: '/analytics' },
+        { id: 'settings', label: 'Settings', path: '/settings' },
     ];
 
     return (
-        <nav className='flex justify-between items-center px-6 py-4 bg-[#0a1a2e] border-b border-[#1a2a3a] '>
+        <nav className=' fixed top-0 left-0 right-0 z-50 flex justify-between items-center px-6 py-4 bg-[#011B2C] border-b border-[#1a2a3a]'>
             {/* Left: Logo */}
             <div className='flex items-center gap-4'>
-                <img src={logo} alt="BookPilot" className='h-8 w-auto' />
+                <button onClick={() => navigate('/')}>
+                    <img src={logo} alt="BookPilot" className='h-8 w-auto cursor-pointer' />
+                </button>
             </div>
 
             {/* Center: Navigation Tabs */}
@@ -41,15 +66,18 @@ export default function Navbar() {
                 {navTabs.map((tab) => (
                     <button
                         key={tab.id}
-                        onClick={() => setActiveTab(tab.id)}
-                        className={`px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors ${
+                        onClick={() => {
+                            setActiveTab(tab.id);
+                            navigate(tab.path);
+                        }}
+                        className={`px-4 py-2 rounded-3xl flex items-center gap-2 text-sm font-medium transition-colors ${
                             activeTab === tab.id
-                                ? 'bg-[#2d4a3e] border border-[#4ade80] text-white'
+                                ? 'bg-[#004E66]  text-white'
                                 : 'text-gray-400 hover:text-white'
                         }`}
                     >
                         {tab.id === 'books' && (
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg className="w-4 h-4" fill="none" stroke="#CDF056" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                             </svg>
                         )}
@@ -80,7 +108,7 @@ export default function Navbar() {
             </div>
 
             {/* Right: User Profile */}
-            <div className='flex items-center gap-3'>
+            <div className='flex items-center gap-3 relative'>
                 <div className='text-right'>
                     <div className='text-white text-sm font-medium'>
                         {user?.name || user?.email?.split('@')[0] || 'User'}
@@ -89,10 +117,46 @@ export default function Navbar() {
                         {user?.email || 'user@example.com'}
                     </div>
                 </div>
-                <div className='w-10 h-10 rounded-full bg-[#2d4a3e] flex items-center justify-center border border-[#4ade80]'>
-                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                    </svg>
+                <div className='relative'>
+                    <button
+                        onClick={() => setShowUserMenu(!showUserMenu)}
+                        className='w-10 h-10 rounded-full bg-[#2d4a3e] flex items-center justify-center border border-[#4ade80] hover:bg-[#3d5a4e] transition-colors'
+                    >
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        </svg>
+                    </button>
+                    
+                    {/* User Dropdown Menu */}
+                    {showUserMenu && (
+                        <>
+                            <div 
+                                className="fixed inset-0 z-40" 
+                                onClick={() => setShowUserMenu(false)}
+                            />
+                            <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-200 z-50">
+                                <div className="py-1">
+                                    <div className="px-4 py-2 border-b border-gray-200">
+                                        <div className="text-sm font-medium text-gray-900">
+                                            {user?.name || user?.email?.split('@')[0] || 'User'}
+                                        </div>
+                                        <div className="text-xs text-gray-500 truncate">
+                                            {user?.email || 'user@example.com'}
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={handleLogout}
+                                        className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                        </svg>
+                                        Logout
+                                    </button>
+                                </div>
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
         </nav>

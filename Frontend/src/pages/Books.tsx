@@ -2,11 +2,15 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchBooks, createBook, fetchBook } from "../utils/api";
 import Background1 from "../assets/Branding/Background1.png"
+import background2 from "../assets/Branding/Log_in_background.png"
 
 type BookSummary = { 
   id: number; 
   title: string;
   chapters?: any[];
+  is_collaboration?: boolean;
+  collaborator_role?: "editor" | "viewer" | "commenter" | null;
+  owner_name?: string | null;
 };
 
 type BookCardProps = {
@@ -39,9 +43,23 @@ function BookCard({ book, onSelect }: BookCardProps) {
 
   return (
     <div 
-      className="bg-[#1a2a3a] rounded-xl p-5 border border-[#2d3a4a] hover:border-[#4ade80]/30 transition-all cursor-pointer relative"
+      className={`bg-[#002A40] rounded-lg p-5 border transition-all cursor-pointer relative ${
+        book.is_collaboration 
+          ? "border-blue-500/50 hover:border-blue-400" 
+          : "border-[#2d3a4a] hover:border-[#4ade80]/30"
+      }`}
       onClick={() => onSelect(book.id)}
     >
+      {/* Collaboration Badge */}
+      {book.is_collaboration && (
+        <div className="absolute top-4 left-4 flex items-center gap-1.5 px-2 py-1 bg-blue-500/20 border border-blue-400/50 rounded-md">
+          <svg className="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+          </svg>
+          <span className="text-blue-400 text-xs font-semibold">COLLAB</span>
+        </div>
+      )}
+
       {/* Options Menu */}
       <div className="absolute top-4 right-4">
         <button
@@ -69,18 +87,34 @@ function BookCard({ book, onSelect }: BookCardProps) {
 
       {/* Book Icon */}
       <div className="mb-4">
-        <div className="w-12 h-12 bg-[#4ade80] rounded-lg flex items-center justify-center">
-          <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+        <div className={`w-8 h-8 rounded-md flex items-center justify-center ${
+          book.is_collaboration ? "bg-blue-500/20" : "bg-[#004E66]"
+        }`}>
+          <svg className={`w-5 h-5 ${book.is_collaboration ? "text-blue-400" : "text-[#CDF056]"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
           </svg>
         </div>
       </div>
 
       {/* Title */}
-      <h3 className="text-white font-bold text-lg mb-1">{book.title}</h3>
+      <div className="mb-1">
+        <h3 className="text-white font-bold text-md">{book.title}</h3>
+        {book.is_collaboration && book.owner_name && (
+          <p className="text-blue-400 text-xs mt-1">by {book.owner_name}</p>
+        )}
+      </div>
       
       {/* Subtitle */}
       <p className="text-gray-400 text-sm mb-4">{subtitle}</p>
+
+      {/* Collaboration Role Badge */}
+      {book.is_collaboration && book.collaborator_role && (
+        <div className="mb-3">
+          <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-400/30">
+            {book.collaborator_role.charAt(0).toUpperCase() + book.collaborator_role.slice(1)}
+          </span>
+        </div>
+      )}
 
       {/* Goal */}
       <div className="flex items-center gap-2 mb-4">
@@ -88,7 +122,7 @@ function BookCard({ book, onSelect }: BookCardProps) {
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
         </svg>
         <span className="text-gray-400 text-xs font-medium">GOAL:</span>
-        <span className="text-white text-xs font-semibold">{goal}</span>
+        <span className="text-xs font-semibold text-gray-400">{goal}</span>
       </div>
 
       {/* Progress */}
@@ -99,11 +133,12 @@ function BookCard({ book, onSelect }: BookCardProps) {
         </div>
         <div className="w-full bg-[#2d3a4a] rounded-full h-2">
           <div 
-            className="bg-[#4ade80] h-2 rounded-full transition-all"
+            className="bg-[#CDF056] h-2 rounded-full transition-all"
             style={{ width: `${progress}%` }}
           />
         </div>
       </div>
+      <hr className="border-gray-700 mb-4" />
 
       {/* Due Date */}
       <div className="flex items-center gap-2">
@@ -125,12 +160,19 @@ export default function Books() {
     setLoading(true);
     const res = await fetchBooks();
     if (res.success) {
-      // Fetch full details for each book to get chapters
+      // The backend now returns books with collaboration info and chapters
+      // We can use the data directly, but still fetch full details to ensure chapters are loaded
       const booksWithDetails = await Promise.all(
         res.data.map(async (book: BookSummary) => {
           const bookRes = await fetchBook(book.id);
           if (bookRes.success) {
-            return bookRes.data;
+            // Preserve collaboration info from the list endpoint
+            return {
+              ...bookRes.data,
+              is_collaboration: book.is_collaboration,
+              collaborator_role: book.collaborator_role,
+              owner_name: book.owner_name,
+            };
           }
           return book;
         })
@@ -154,22 +196,32 @@ export default function Books() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#0a1a2e] relative">
-      {/* Background Pattern */}
-      <img src={Background1} alt="Background" className="fixed inset-0 h-full opacity-25 pointer-events-none" />
-
+    <div className="min-h-screen bg-[#0a1a2e] relative pt-14">
+      {/* Fixed Background Image */}
+      <div 
+        className="fixed top-0 left-0 right-0 bottom-0 z-0"
+        style={{
+          backgroundImage: `url(${background2})`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+          backgroundAttachment: 'fixed'
+        }}
+      />
+      
+      {/* Scrollable Content */}
       <div className="relative z-10 px-8 py-8">
         {/* Header Section */}
-        <div className="flex justify-between items-center mb-8">
+        <div className="flex justify-between items-center mb-8 p-8 relative">
           <div>
             <h1 className="text-4xl font-bold text-white mb-2">My Books</h1>
             <p className="text-gray-400 text-sm">Manage your current projects and ideas.</p>
           </div>
           <button
             onClick={handleCreateBook}
-            className="bg-[#fbbf24] hover:bg-[#f59e0b] text-[#0a1a2e] font-semibold px-6 py-3 rounded-lg flex items-center gap-2 transition-colors"
+            className="bg-[#CDF056] border hover:bg-[#f59e0b] text-[#0a1a2e] font-semibold px-6 py-2  flex items-center gap-2 transition-colors"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5 " fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
             <span>New Book</span>
@@ -177,21 +229,23 @@ export default function Books() {
         </div>
 
         {/* Books Grid */}
-        {loading ? (
-          <div className="text-center text-gray-400 py-12">Loading books...</div>
-        ) : books.length === 0 ? (
-          <div className="text-center text-gray-400 py-12">
-            <p className="mb-4">No books yet. Create your first book to get started!</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {books.map((book) => (
-              <BookCard key={book.id} book={book} onSelect={(id) => {
-                navigate(`/book/${id}`);
-              }} />
-            ))}
-          </div>
-        )}
+        <div className="relative rounded-lg p-8 pt-0">
+          {loading ? (
+            <div className="text-center text-gray-400 py-12">Loading books...</div>
+          ) : books.length === 0 ? (
+            <div className="text-center text-gray-400 py-12">
+              <p className="mb-4">No books yet. Create your first book to get started!</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              {books.map((book) => (
+                <BookCard key={book.id} book={book} onSelect={(id) => {
+                  navigate(`/book/${id}`);
+                }} />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
