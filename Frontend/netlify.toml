@@ -1,0 +1,11 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Configure secrets scanning
+# Vite injects environment variables at build time, which is expected behavior
+# These are public env vars (VITE_*) meant to be in the client bundle
+[build.environment]
+  SECRETS_SCAN_OMIT_KEYS = "VITE_API_URL,VITE_GOOGLE_CLIENT_ID"
+  SECRETS_SCAN_OMIT_PATHS = "dist/**/*"
+
