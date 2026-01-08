@@ -1,14 +1,17 @@
 import { useState, useEffect } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { fetchBook } from "../utils/api";
 import Position, { type BookOutline } from "../components/position";
 import OutlineView from "../components/OutlineView";
 import Editor from "../components/Editor";
+import BookChecks from "./BookChecks";
 
 type BookDetail = BookOutline & {
   core_topic?: string;
   audience?: string;
   user_contexts?: { id: number; text: string; created_at: string }[];
+  is_collaboration?: boolean;
+  collaborator_role?: "editor" | "viewer" | "commenter" | null;
 };
 
 type Tab = "overview" | "position" | "outline" | "editor" | "checks" | "design" | "publish";
@@ -16,10 +19,22 @@ type Tab = "overview" | "position" | "outline" | "editor" | "checks" | "design" 
 export default function BookDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [book, setBook] = useState<BookDetail | null>(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<Tab>("position");
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    const tabParam = searchParams.get("tab");
+    return (tabParam as Tab) || "position";
+  });
   const [outline, setOutline] = useState<BookDetail | null>(null);
+  
+  // Handle URL parameters for navigation from checks
+  useEffect(() => {
+    const tabParam = searchParams.get("tab");
+    if (tabParam && ["overview", "position", "outline", "editor", "checks", "design", "publish"].includes(tabParam)) {
+      setActiveTab(tabParam as Tab);
+    }
+  }, [searchParams]);
 
   const loadBook = async () => {
     if (!id) return;
@@ -36,7 +51,7 @@ export default function BookDetail() {
     loadBook();
   }, [id]);
 
-  const tabs: { id: Tab; label: string; icon: JSX.Element }[] = [
+  const tabs: { id: Tab; label: string; icon: React.ReactElement }[] = [
     {
       id: "overview",
       label: "Overview",
@@ -124,9 +139,9 @@ export default function BookDetail() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a1a2e]">
+    <div className="min-h-screen bg-[#0a1a2e] mt-18">
       {/* Secondary Navigation Bar */}
-      <div className="bg-[#011b2d] border-b border-[#2d3a4a] px-6 py-2">
+      <div className="bg-[#002b42] border-b border-[#002A40] px-6 py-2">
         <div className="flex items-center justify-between">
           {/* Left: Back button and book title */}
           <div className="flex items-center gap-4">
@@ -147,9 +162,9 @@ export default function BookDetail() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors ${
+                className={`px-4 py-2  flex items-center gap-2 text-sm font-medium transition-colors ${
                   activeTab === tab.id
-                    ? "bg-[#2d4a3e] text-[#4ade80] border border-[#4ade80]"
+                    ? "bg-[#004E66] text-white"
                     : "text-gray-400 hover:text-white"
                 }`}
               >
@@ -162,7 +177,7 @@ export default function BookDetail() {
       </div>
 
       {/* Main Content Area */}
-      <div className="h-[calc(100vh-140px)]">
+      <div className="h-[calc(100vh-140px)] z-50">
         {activeTab === "position" && (
           <Position
             initialOutline={outline}
@@ -189,13 +204,11 @@ export default function BookDetail() {
             outline={outline}
             bookId={book.id}
             onOutlineUpdate={handleOutlineUpdate}
+            isCollaboration={book.is_collaboration}
+            collaboratorRole={book.collaborator_role}
           />
         )}
-        {activeTab === "checks" && (
-          <div className="h-full flex items-center justify-center bg-white">
-            <div className="text-gray-500">Checks tab - Coming soon</div>
-          </div>
-        )}
+        {activeTab === "checks" && <BookChecks />}
         {activeTab === "design" && (
           <div className="h-full flex items-center justify-center bg-white">
             <div className="text-gray-500">Design tab - Coming soon</div>
