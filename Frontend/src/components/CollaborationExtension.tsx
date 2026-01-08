@@ -99,7 +99,7 @@ export const CollaborationExtension = Extension.create<CollaborationOptions>({
       }),
       new Plugin({
         key: new PluginKey('collaborationSend'),
-        appendTransaction(transactions, _oldState, newState) {
+        appendTransaction(transactions, _oldState, _newState) {
           // Collect steps from transactions
           const steps: Step[] = [];
           transactions.forEach((tr) => {
