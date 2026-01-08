@@ -1,0 +1,73 @@
+Here is a text document designed to help you test the AI feature's ability to generate a talking point titled "Illustrate with examples what AI can and cannot do."
+
+AI Feature Testing Document: Capabilities and Limitations
+Talking Point Title: Illustrate with examples what AI can and cannot do.
+
+Content for Upload:
+
+Understanding the scope of modern Artificial Intelligence requires clear examples of its current capabilities and, more importantly, its boundaries. Today’s AI is incredibly powerful, but it remains a narrow tool.
+
+What AI Can Do (Current Strengths - Narrow AI)
+AI excels at tasks that involve vast data processing, pattern recognition, and optimization within a defined environment.
+
+Prediction and Forecasting:
+
+Example: Predicting stock prices, customer churn rates, or next week's weather patterns by analyzing historical data.
+
+Mechanism: Machine Learning algorithms identifying complex, non-obvious correlations.
+
+Perception and Classification:
+
+Example: Medical imaging AI detecting cancer in an X-ray with greater speed and accuracy than a human, or classifying thousands of pictures (e.g., identifying all cars in a traffic camera feed).
+
+Mechanism: Deep Learning models trained on millions of labeled images.
+
+Optimization and Route Planning:
+
+Example: Determining the most efficient delivery route for thousands of packages across a city, or optimizing energy consumption in a data center.
+
+Mechanism: Reinforcement Learning and proprietary algorithms maximizing a single, measurable outcome (like time or cost).
+
+Content Generation and Translation:
+
+Example: Generating natural-sounding text (articles, poetry, summaries), creating realistic images from text prompts, or translating languages in real-time.
+
+Mechanism: Large Language Models (LLMs) and Generative Adversarial Networks (GANs).
+
+What AI Cannot Do (Current Limitations - The Human Gap)
+AI struggles with tasks requiring true generalized intelligence, common sense, and emotional context.
+
+Handle Novel Situations (True Generalization):
+
+Example: A self-driving car encountering a novel, highly unusual road hazard (like a large, non-standard object) that wasn't in its training data. The AI will likely fail or react unpredictably, whereas a human driver can apply common sense and judgment.
+
+Limitation: AI lacks common sense and cannot apply knowledge across different, unrelated domains.
+
+Understand Emotional Context or Intention (Theory of Mind):
+
+Example: An AI assistant receiving a text that says "Great, just what I needed," after a known tragedy. The AI cannot grasp the sarcasm or despair intended by the human.
+
+Limitation: AI lacks consciousness, feelings, and the ability to infer complex human psychological states.
+
+Define and Set Global Goals:
+
+Example: An AI can efficiently optimize energy usage in a building, but it cannot independently decide whether optimizing energy is more important than optimizing human comfort or saving money. It only optimizes for the goal it was given.
+
+Limitation: AI cannot establish ethical values, political objectives, or existential purpose; it only executes human-defined objectives.
+
+True Creativity and Innovation:
+
+Example: While AI can generate highly novel music or art by combining existing styles (a process called recombination), it cannot experience genuine inspiration or define a completely new, foundational artistic movement that breaks all existing rules, as a human genius might.
+
+Limitation: AI is fundamentally pattern-matching and interpolation, not genuine spontaneous creation or philosophical reasoning.
+
+🧪 Suggested Test Plan
+This content is designed to test the following:
+
+Clear Categorization: Does the talking point clearly separate and label the "Can Do" and "Cannot Do" sections?
+
+Concrete Examples: Does the AI extract and use the specific, illustrative examples for both sides of the discussion?
+
+Explanation of Mechanism/Limitation: Does the AI successfully include the brief explanation of why it can or cannot perform the task (e.g., "Deep Learning models," "lacks common sense")?
+
+Tone of Authority: Does the output sound informed and balanced, making a clear distinction between what is currently achievable (Narrow AI) and what remains strictly human (AGI/ASI limitations)?

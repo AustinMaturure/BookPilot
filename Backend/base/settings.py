@@ -11,23 +11,28 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 from pathlib import Path
+from dotenv import load_dotenv
+import os
 
 AUTH_USER_MODEL = "accounts.User"
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load environment variables from .env at project root
+load_dotenv(BASE_DIR / ".env")
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-ocvh4zouq(zopae)9&sj_j$vqr#xtt+##w$e@w+$%5yl+$s!wq'
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-ocvh4zouq(zopae)9&sj_j$vqr#xtt+##w$e@w+$%5yl+$s!wq')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "").split() if os.getenv("ALLOWED_HOSTS") else []
 
 
 # Application definition
@@ -43,6 +48,7 @@ INSTALLED_APPS = [
     'pilot',
     'corsheaders',
     'rest_framework',
+    'rest_framework.authtoken',
 ]
 CORS_ALLOW_ALL_ORIGINS = True
 MIDDLEWARE = [
@@ -128,3 +134,14 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# REST Framework settings
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
