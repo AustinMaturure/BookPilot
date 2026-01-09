@@ -95,6 +95,38 @@ export async function generateFollowupQuestion(data: {
   }
 }
 
+export async function validateAnswerQuality(data: {
+  question: string;
+  answer: string;
+  min_length: number;
+}) {
+  try {
+    const response = await api.post("pilot/api/validate_answer/", data);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function generateInsightSummary(data: {
+  type: "core_topic" | "audience";
+  answers: { question: string; answer: string; key: string }[];
+  book_id?: number;
+}) {
+  try {
+    const response = await api.post("pilot/api/generate_insight/", data);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
 export async function createOutline(data: {
   answers: { question: string; answer: string; key?: string }[];
   book_id?: number;
@@ -393,6 +425,9 @@ export type CommentType = {
   text: string;
   comment_type: "ai" | "user" | "collaborator";
   suggested_replacement?: string;
+  parent?: number | null;
+  parent_user_name?: string | null;
+  replies?: CommentType[];
   created_at: string;
   updated_at: string;
 };
@@ -414,6 +449,7 @@ export async function createComment(data: {
   text: string;
   comment_type?: "ai" | "user" | "collaborator";
   suggested_replacement?: string;
+  parent_id?: number;
 }) {
   try {
     const response = await api.post("pilot/api/comments/", data);
@@ -457,7 +493,7 @@ export async function quickTextAction(data: {
   book_id: number;
   talking_point_id: number;
   selected_text: string;
-  action: "shorten" | "strengthen" | "clarify";
+  action: "shorten" | "strengthen" | "clarify" | "expand" | "remove_repetition" | "regenerate" | "improve_flow" | "split_paragraph" | "turn_into_bullets" | "add_transition" | "rewrite_heading" | "suggest_subheading" | "give_example";
 }) {
   try {
     const response = await api.post("pilot/api/quick-action/", data);

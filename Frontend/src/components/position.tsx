@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
-import { createOutline, generateFollowupQuestion } from "../utils/api";
+import { useEffect, useState, useRef } from "react";
+import { createOutline, generateFollowupQuestion, validateAnswerQuality, generateInsightSummary } from "../utils/api";
 import card2 from "../assets/Branding/Card2.png"
 
-type Message = { from: "AI" | "user"; text: string };
+type Message = { from: "AI" | "user"; text: string; isLink?: boolean };
 type TalkingPoint = { id?: number; text: string; order?: number; content?: string };
 type Section = { id?: number; title: string; order?: number; talking_points: TalkingPoint[] };
 type Chapter = { id?: number; title: string; order?: number; sections: Section[] };
@@ -14,6 +14,7 @@ type PositionProps = {
   showInlineOutline?: boolean;
   bookId?: number;
   bookData?: { core_topic?: string; audience?: string } | null;
+  onSwitchTab?: (tab: string) => void;
 };
 
 export default function Position({
@@ -21,6 +22,7 @@ export default function Position({
   onOutlineUpdate,
   bookId,
   bookData = null,
+  onSwitchTab,
 }: PositionProps) {
   type QuestionConfig = {
     question: string;
@@ -85,13 +87,21 @@ export default function Position({
   const [isGenerating, setIsGenerating] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [needsFollowUp, setNeedsFollowUp] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [generatedCoreTopic, setGeneratedCoreTopic] = useState<string | null>(null);
+  const [generatedAudience, setGeneratedAudience] = useState<string | null>(null);
 
   // Extract insights from answers or use saved book data
-  const coreTopic = bookData?.core_topic || answers.find(a => a.key === "core_topic")?.answer || "Not yet defined";
+  // Use AI-generated summaries if available, otherwise fall back to raw answers or book data
+  const coreTopic = bookData?.core_topic || generatedCoreTopic || answers.find(a => a.key === "core_topic")?.answer || "Not yet defined";
   const audienceAnswers = answers.filter(a => a.key === "ideal_reader").map(a => a.answer);
   const audience = bookData?.audience 
     ? bookData.audience.split(";").map(a => a.trim()).filter(a => a.length > 0)
-    : audienceAnswers;
+    : generatedAudience
+    ? [generatedAudience]
+    : audienceAnswers.length > 0
+    ? audienceAnswers
+    : ["Not yet defined"];
   const goal = "50k words"; // Placeholder
 
 
@@ -101,8 +111,72 @@ export default function Position({
     }
   }, [messages, isGenerating]);
 
-  const validateAnswer = (answer: string, config: QuestionConfig): boolean => {
-    return answer.trim().length >= config.minLength;
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [messages, isTyping, isGenerating]);
+
+  // Generate AI summaries when relevant answers are provided
+  useEffect(() => {
+    const generateSummaries = async () => {
+      // Generate core topic summary when we have core_topic and personal_connection answers
+      const coreTopicAnswer = answers.find(a => a.key === "core_topic");
+      const personalConnectionAnswer = answers.find(a => a.key === "personal_connection");
+      
+      if (coreTopicAnswer && personalConnectionAnswer && !generatedCoreTopic && !bookData?.core_topic) {
+        const result = await generateInsightSummary({
+          type: "core_topic",
+          answers: [coreTopicAnswer, personalConnectionAnswer],
+          book_id: bookId,
+        });
+        if (result.success && result.data?.summary) {
+          setGeneratedCoreTopic(result.data.summary);
+        }
+      }
+
+      // Generate audience summary when we have ideal_reader and main_challenge answers
+      const idealReaderAnswer = answers.find(a => a.key === "ideal_reader");
+      const mainChallengeAnswer = answers.find(a => a.key === "main_challenge");
+      
+      if (idealReaderAnswer && mainChallengeAnswer && !generatedAudience && !bookData?.audience) {
+        const result = await generateInsightSummary({
+          type: "audience",
+          answers: [idealReaderAnswer, mainChallengeAnswer],
+          book_id: bookId,
+        });
+        if (result.success && result.data?.summary) {
+          setGeneratedAudience(result.data.summary);
+        }
+      }
+    };
+
+    if (answers.length > 0) {
+      generateSummaries();
+    }
+  }, [answers, bookId, bookData, generatedCoreTopic, generatedAudience]);
+
+  const validateAnswer = async (answer: string, config: QuestionConfig): Promise<boolean> => {
+    // Use AI to validate answer quality, not just length
+    try {
+      const result = await validateAnswerQuality({
+        question: config.question,
+        answer: answer,
+        min_length: config.minLength,
+      });
+      
+      if (result.success && result.data) {
+        return result.data.is_valid === true;
+      }
+      
+      // Fallback to length check if API fails
+      return answer.trim().length >= config.minLength;
+    } catch (error) {
+      console.error("Error validating answer:", error);
+      // Fallback to length check on error
+      return answer.trim().length >= config.minLength;
+    }
   };
 
   const sendMessage = async () => {
@@ -110,21 +184,38 @@ export default function Position({
     if (!trimmed || isGenerating) return;
 
     const currentConfig = questionConfigs[questionIndex];
-    const isValid = validateAnswer(trimmed, currentConfig);
-
     const userBubble: Message = { from: "user", text: trimmed };
     const newMessages: Message[] = [...messages, userBubble];
     setUserMessage("");
 
-    // If answer is too short and we haven't asked follow-up yet, generate a dynamic follow-up question
-    if (!isValid && !needsFollowUp) {
-      // Save the initial answer first (even if short)
-      const initialAnswer = { question: currentConfig.question, answer: trimmed, key: currentConfig.key };
-      setAnswers([...answers, initialAnswer]);
-      setNeedsFollowUp(true);
-      
-      // Add user's message to the chat first - use functional update to ensure it's added
-      setMessages((prev) => [...prev, userBubble]);
+    // Get existing answer for this question (if any)
+    const existingAnswer = answers.find(a => a.key === currentConfig.key);
+    
+    // Combine with existing answer if we're in follow-up mode
+    let finalAnswer = trimmed;
+    if (existingAnswer && needsFollowUp) {
+      finalAnswer = `${existingAnswer.answer} ${trimmed}`;
+    }
+
+    // Save/update the answer
+    const updatedAnswers = existingAnswer
+      ? answers.map(a => a.key === currentConfig.key ? { ...a, answer: finalAnswer } : a)
+      : [...answers, { question: currentConfig.question, answer: finalAnswer, key: currentConfig.key }];
+    
+    setAnswers(updatedAnswers);
+    
+    // Add user's message to chat
+    setMessages((prev) => [...prev, userBubble]);
+
+    // Validate the answer using AI (checks content quality, not just length)
+    const isValid = await validateAnswer(finalAnswer, currentConfig);
+
+    // If answer is not valid, ask a follow-up question (keep asking until valid)
+    if (!isValid) {
+      // Set needsFollowUp flag if not already set (for first short answer)
+      if (!needsFollowUp) {
+        setNeedsFollowUp(true);
+      }
       
       // Small delay to ensure user message is rendered before showing typing indicator
       setTimeout(() => {
@@ -133,8 +224,8 @@ export default function Position({
         // Generate follow-up question using AI
         generateFollowupQuestion({
           question: currentConfig.question,
-          answer: trimmed,
-          context: answers.map(a => ({ question: a.question, answer: a.answer }))
+          answer: finalAnswer,
+          context: updatedAnswers.map(a => ({ question: a.question, answer: a.answer }))
         }).then((followupResult) => {
           if (followupResult.success && followupResult.data.followup_question) {
             setTimeout(() => {
@@ -158,62 +249,10 @@ export default function Position({
           setIsTyping(false);
         });
       }, 100);
-      return;
-    }
-
-    // Save the answer (combine with previous if follow-up)
-    const existingAnswer = answers.find(a => a.key === currentConfig.key);
-    let finalAnswer = trimmed;
-    if (existingAnswer && needsFollowUp) {
-      // Combine the follow-up answer with the initial answer
-      finalAnswer = `${existingAnswer.answer} ${trimmed}`;
-    }
-
-    const updatedAnswers = existingAnswer
-      ? answers.map(a => a.key === currentConfig.key ? { ...a, answer: finalAnswer } : a)
-      : [...answers, { question: currentConfig.question, answer: finalAnswer, key: currentConfig.key }];
-    
-    setAnswers(updatedAnswers);
-    
-    // Check if combined answer is now valid
-    const combinedIsValid = validateAnswer(finalAnswer, currentConfig);
-    
-    // If still not valid after follow-up, ask another follow-up
-    if (!combinedIsValid && needsFollowUp) {
-      // Add user's follow-up answer to messages first - use functional update
-      setMessages((prev) => [...prev, userBubble]);
-      
-      // Small delay to ensure user message is rendered
-      setTimeout(() => {
-        setIsTyping(true);
-        generateFollowupQuestion({
-          question: currentConfig.question,
-          answer: finalAnswer,
-          context: updatedAnswers.map(a => ({ question: a.question, answer: a.answer }))
-        }).then((followupResult) => {
-          if (followupResult.success && followupResult.data.followup_question) {
-            setTimeout(() => {
-              setMessages((prev) => [...prev, { from: "AI", text: "..." }]);
-              setTimeout(() => {
-                setMessages((prev) => {
-                  const trimmedPrev = prev.filter((m, idx) => !(idx === prev.length - 1 && m.text === "..."));
-                  return [...trimmedPrev, { from: "AI", text: followupResult.data.followup_question }];
-                });
-                setIsTyping(false);
-              }, 1200);
-            }, 800);
-          } else {
-            setMessages((prev) => [...prev, { from: "AI", text: "I'd love to hear a bit more detail on this. Can you expand on that?" }]);
-            setIsTyping(false);
-          }
-        }).catch((_error) => {
-          setMessages((prev) => [...prev, { from: "AI", text: "Can you provide a bit more detail?" }]);
-          setIsTyping(false);
-        });
-      }, 100);
-      return;
+      return; // Don't proceed to next question until answer is valid
     }
     
+    // Answer is valid - reset follow-up flag and proceed
     setNeedsFollowUp(false);
 
     // Move to next question or generate outline
@@ -248,7 +287,7 @@ export default function Position({
       }
 
       onOutlineUpdate?.(result.data);
-      setMessages((prev) => [...prev, { from: "AI", text: "Here's your outline! You can now view and edit it in the Outline tab." }]);
+      setMessages((prev) => [...prev, { from: "AI", text: "Your outline has been generated successfully! Click the Outline tab to view and edit it.", isLink: true }]);
     } catch (error) {
       setMessages([
         ...newMessages,
@@ -267,13 +306,14 @@ export default function Position({
   };
 
   // Calculate progress based on question index
-  const progress = Math.min(((questionIndex + 1) / questionConfigs.length) * 100, 100);
+  const progress = Math.min(((questionIndex 
+  ) / questionConfigs.length) * 100, 100);
   const currentStep = Math.min(Math.ceil((questionIndex + 1) / 2), 5);
 
   return (
     <div className="flex h-full bg-[#0a1a2e]">
       {/* Left Sidebar - Progress */}
-      <div className="w-20 bg-[#1a2a3a] border-r border-[#2d3a4a] flex flex-col items-center py-6 justify-center">
+      <div className="w-20 bg-[#1a2a3a] border-r border-[#2d3a4a] flex flex-col items-center py-6 justify-center mt-10">
         <div className="mb-6 flex flex-col items-center justify-center">
           <div className="text-[#4ade80] text-xs font-semibold mb-2 text-center" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
             PROGRESS
@@ -301,7 +341,7 @@ export default function Position({
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col bg-white rounded-tl-3xl">
+      <div className="flex-1 flex flex-col bg-white rounded-tl-3xl mt-10">
         <div className="flex-1 overflow-y-auto p-8 space-y-4">
           {messages.map((msg, i) => (
             <div
@@ -325,7 +365,20 @@ export default function Position({
                 }`}
               >
                 <div className="font-medium mb-1">{msg.from === "AI" ? "BookPilot coach" : ""}</div>
-                <div className="whitespace-pre-wrap">{msg.text}</div>
+                {msg.isLink ? (
+                  <div className="whitespace-pre-wrap">
+                    {msg.text.split("Click the Outline tab")[0]}
+                    <button
+                      onClick={() => onSwitchTab?.("outline")}
+                      className="text-blue-600 hover:text-blue-800 underline font-semibold cursor-pointer"
+                    >
+                      Click the Outline tab
+                    </button>
+                    {msg.text.split("Click the Outline tab")[1]}
+                  </div>
+                ) : (
+                  <div className="whitespace-pre-wrap">{msg.text}</div>
+                )}
               </div>
               {msg.from === "user" && (
                 <div className="shrink-0 w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center">
@@ -336,7 +389,27 @@ export default function Position({
               )}
             </div>
           ))}
-          {isTyping && (
+          {isGenerating && (
+            <div className="flex items-start gap-3 justify-start">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-[#4ade80] flex items-center justify-center">
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <div className="bg-gray-100 rounded-3xl rounded-bl-none px-6 py-4">
+                <div className="font-medium mb-1">BookPilot coach</div>
+                <div className="flex items-center gap-2 text-gray-600">
+                  <div className="flex gap-1">
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></div>
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
+                  </div>
+                  <span className="text-sm">Generating outline...</span>
+                </div>
+              </div>
+            </div>
+          )}
+          {isTyping && !isGenerating && (
             <div className="flex items-start gap-3 justify-start">
               <div className="shrink-0 w-10 h-10 rounded-full bg-[#4ade80] flex items-center justify-center">
                 <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -352,6 +425,7 @@ export default function Position({
               </div>
             </div>
           )}
+          <div ref={messagesEndRef} />
         </div>
 
         {/* Input Area */}
@@ -396,7 +470,7 @@ export default function Position({
       </div>
 
       {/* Right Sidebar - Live Insights */}
-      <div className="w-80 border-l border-[#2d4a5a] overflow-y-auto relative" style={{
+      <div className="w-80 border-l border-[#2d4a5a] overflow-y-auto relative mt-10" style={{
         backgroundImage: `url(${card2})`,
         backgroundSize: 'cover',
         backgroundPosition: 'center',

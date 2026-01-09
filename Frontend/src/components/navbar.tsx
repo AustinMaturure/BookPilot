@@ -53,7 +53,7 @@ export default function Navbar() {
     ];
 
     return (
-        <nav className=' fixed top-0 left-0 right-0 z-50 flex justify-between items-center px-6 py-4 bg-[#011B2C] border-b border-[#1a2a3a]'>
+        <nav className=' fixed top-0 left-0 right-0 z-80 flex justify-between items-center px-6 py-4 bg-[#011B2C] border-b border-[#1a2a3a]'>
             {/* Left: Logo */}
             <div className='flex items-center gap-4'>
                 <button onClick={() => navigate('/')}>
@@ -108,7 +108,7 @@ export default function Navbar() {
             </div>
 
             {/* Right: User Profile */}
-            <div className='flex items-center gap-3 relative'>
+            <div className='flex items-center gap-3 relative z-100'>
                 <div className='text-right'>
                     <div className='text-white text-sm font-medium'>
                         {user?.name || user?.email?.split('@')[0] || 'User'}
@@ -131,10 +131,10 @@ export default function Navbar() {
                     {showUserMenu && (
                         <>
                             <div 
-                                className="fixed inset-0 z-40" 
+                                className="fixed inset-0 z-100" 
                                 onClick={() => setShowUserMenu(false)}
                             />
-                            <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-200 z-50">
+                            <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-200 z-1000">
                                 <div className="py-1">
                                     <div className="px-4 py-2 border-b border-gray-200">
                                         <div className="text-sm font-medium text-gray-900">

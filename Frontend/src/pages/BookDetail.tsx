@@ -141,7 +141,7 @@ export default function BookDetail() {
   return (
     <div className="min-h-screen bg-[#0a1a2e] mt-18">
       {/* Secondary Navigation Bar */}
-      <div className="bg-[#002b42] border-b border-[#002A40] px-6 py-2">
+      <div className="bg-[#002b42] border-b border-[#002A40] px-6 py-2 fixed top-10% left-0 right-0 z-50 ">
         <div className="flex items-center justify-between">
           {/* Left: Back button and book title */}
           <div className="flex items-center gap-4">
@@ -177,7 +177,7 @@ export default function BookDetail() {
       </div>
 
       {/* Main Content Area */}
-      <div className="h-[calc(100vh-140px)] z-50">
+      <div className="h-[calc(100vh-60px)] z-50  ">
         {activeTab === "position" && (
           <Position
             initialOutline={outline}
@@ -185,6 +185,7 @@ export default function BookDetail() {
             showInlineOutline={false}
             bookId={book.id}
             bookData={book}
+            onSwitchTab={(tab) => setActiveTab(tab as Tab)}
           />
         )}
         {activeTab === "outline" && outline && (

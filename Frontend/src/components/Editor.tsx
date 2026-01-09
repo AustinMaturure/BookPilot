@@ -46,6 +46,26 @@ type SelectedItem = {
   sectionTitle: string;
 } | null;
 
+// Action Button Component
+const ActionButton = ({ icon, label, onClick, disabled }: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    className="flex flex-col items-center justify-center p-3 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed group"
+    title={label}
+  >
+    <div className="text-gray-600 group-hover:text-gray-900 mb-1">
+      {icon}
+    </div>
+    <span className="text-xs text-gray-600 group-hover:text-gray-900 text-center leading-tight">{label}</span>
+  </button>
+);
+
 
 type TiptapEditorProps = {
   content: string;
@@ -487,7 +507,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [currentTalkingPointId, setCurrentTalkingPointId] = useState<number | null>(null);
   const [currentChapterId, setCurrentChapterId] = useState<number | null>(null);
   const [selectedAssetIds, setSelectedAssetIds] = useState<number[]>([]);
-  const [activeRightView, setActiveRightView] = useState<"comments" | "chat" | "changes">("comments");
+  const [activeRightView, setActiveRightView] = useState<"comments" | "chat" | "changes" | "moreActions">("comments");
   const [selectedText, setSelectedText] = useState<string>("");
   const [selectionPosition, setSelectionPosition] = useState<{ x: number; y: number } | null>(null);
   const [selectionRange, setSelectionRange] = useState<{ from: number; to: number } | null>(null);
@@ -500,6 +520,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [newCommentText, setNewCommentText] = useState("");
   const [isAddingComment, setIsAddingComment] = useState(false);
   const [isLoadingComments, setIsLoadingComments] = useState(false);
+  const [replyingToCommentId, setReplyingToCommentId] = useState<number | null>(null);
+  const [replyTexts, setReplyTexts] = useState<Record<number, string>>({});
+  const [isAddingReply, setIsAddingReply] = useState<Record<number, boolean>>({});
+  const [expandedReplies, setExpandedReplies] = useState<Record<number, boolean>>({});
   const editorRefs = useRef<Record<number, any>>({});
   const [isApplyingQuickAction, setIsApplyingQuickAction] = useState(false);
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
@@ -1299,7 +1323,14 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       });
 
       if (result.success && result.data) {
-        setComments((prev) => [result.data, ...prev]);
+        // Reload all comments to get updated structure with replies
+        const activeTpId = currentTalkingPointId || (selectedSection?.talking_points?.[0]?.id ?? null);
+        if (activeTpId) {
+          const commentsResult = await getComments(activeTpId);
+          if (commentsResult.success && commentsResult.data) {
+            setComments(commentsResult.data);
+          }
+        }
         setNewCommentText("");
       }
     } catch (error) {
@@ -1309,15 +1340,228 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     }
   };
 
+  const handleAddReply = async (parentCommentId: number) => {
+    const activeTpId = currentTalkingPointId || (selectedSection?.talking_points?.[0]?.id ?? null);
+    const replyText = replyTexts[parentCommentId];
+    if (!replyText?.trim() || !activeTpId || isAddingReply[parentCommentId]) return;
+
+    setIsAddingReply((prev) => ({ ...prev, [parentCommentId]: true }));
+    try {
+      const result = await createComment({
+        talking_point_id: activeTpId,
+        text: replyText.trim(),
+        comment_type: "user",
+        parent_id: parentCommentId,
+      });
+
+      if (result.success && result.data) {
+        // Reload all comments to get updated structure with replies
+        const commentsResult = await getComments(activeTpId);
+        if (commentsResult.success && commentsResult.data) {
+          setComments(commentsResult.data);
+        }
+        setReplyTexts((prev) => ({ ...prev, [parentCommentId]: "" }));
+        setReplyingToCommentId(null);
+      }
+    } catch (error) {
+      console.error("Error adding reply:", error);
+    } finally {
+      setIsAddingReply((prev) => ({ ...prev, [parentCommentId]: false }));
+    }
+  };
+
   const handleDeleteComment = async (commentId: number) => {
     try {
       const result = await deleteComment(commentId);
       if (result.success) {
-        setComments((prev) => prev.filter((c) => c.id !== commentId));
+        // Reload comments to get updated structure
+        const activeTpId = currentTalkingPointId || (selectedSection?.talking_points?.[0]?.id ?? null);
+        if (activeTpId) {
+          const commentsResult = await getComments(activeTpId);
+          if (commentsResult.success && commentsResult.data) {
+            setComments(commentsResult.data);
+          }
+        }
       }
     } catch (error) {
       console.error("Error deleting comment:", error);
     }
+  };
+
+  // Helper function to find parent comment
+  const findParentComment = (parentId: number | null | undefined): CommentType | null => {
+    if (!parentId) return null;
+    
+    const findInComments = (commentList: CommentType[]): CommentType | null => {
+      for (const comment of commentList) {
+        if (comment.id === parentId) {
+          return comment;
+        }
+        if (comment.replies && comment.replies.length > 0) {
+          const found = findInComments(comment.replies);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    
+    return findInComments(comments);
+  };
+
+  // Recursive function to render a comment and its replies
+  const renderComment = (comment: CommentType, depth: number = 0, parentComment?: CommentType) => {
+    const isReplying = replyingToCommentId === comment.id;
+    const replyText = replyTexts[comment.id] || "";
+    const isAdding = isAddingReply[comment.id] || false;
+    const isReply = !!comment.parent;
+    const parent = parentComment || (comment.parent ? findParentComment(comment.parent) : null);
+    const hasReplies = comment.replies && comment.replies.length > 0;
+    const isExpanded = expandedReplies[comment.id] || false;
+    const replyCount = comment.replies?.length || 0;
+
+    return (
+      <div key={comment.id} className={depth > 0 ? "mt-3 ml-6 border-l-2 border-blue-300 pl-3 relative" : ""}>
+        {depth > 0 && (
+          <div className="absolute -left-2 top-0 w-4 h-4 bg-blue-300 rounded-full border-2 border-white"></div>
+        )}
+        <div className={`bg-white rounded-lg p-3 text-sm ${isReply ? "border-l-4 border-blue-400" : ""}`}>
+          {/* Reply indicator */}
+          {isReply && (comment.parent_user_name || parent) && (
+            <div className="mb-2 flex items-center gap-1.5 text-xs">
+              <svg className="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+              </svg>
+              <span className="text-blue-600 font-medium bg-blue-50 px-2 py-0.5 rounded">
+                Replying to <span className="font-semibold text-blue-700">
+                  {comment.parent_user_name || (parent?.comment_type === "ai" ? "AI Coach Review" : parent?.user_name || "User")}
+                </span>
+              </span>
+            </div>
+          )}
+          
+          <div className="flex items-start gap-2 mb-2">
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
+              comment.comment_type === "ai" 
+                ? "bg-[#4ade80]/20" 
+                : comment.comment_type === "collaborator"
+                ? "bg-blue-500/20"
+                : "bg-gray-200"
+            }`}>
+              {comment.comment_type === "ai" ? (
+                <svg className="w-4 h-4 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                </svg>
+              ) : (
+                <span className={`text-xs font-semibold ${
+                  comment.comment_type === "collaborator" ? "text-blue-600" : "text-gray-600"
+                }`}>
+                  {comment.user_name ? comment.user_name.substring(0, 2).toUpperCase() : "U"}
+                </span>
+              )}
+            </div>
+            <div className="flex-1">
+              <div className="text-gray-900 font-semibold mb-1">
+                {comment.comment_type === "ai" 
+                  ? "AI Coach Review" 
+                  : comment.user_name || "User"}
+              </div>
+              <div className="text-gray-500 text-xs">
+                {new Date(comment.created_at).toLocaleDateString()} {new Date(comment.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            </div>
+          </div>
+          <p className="text-gray-700 text-sm mt-2">{comment.text}</p>
+          {comment.suggested_replacement && (
+            <div className="mt-3 bg-gray-50 border border-gray-200 rounded p-2">
+              <div className="text-xs font-semibold text-gray-600 mb-1">REPLACE WITH:</div>
+              <p className="text-sm text-gray-700">{comment.suggested_replacement}</p>
+            </div>
+          )}
+          <div className="flex items-center gap-2 mt-3">
+            <button 
+              onClick={() => {
+                setReplyingToCommentId(isReplying ? null : comment.id);
+                if (!isReplying) {
+                  setReplyTexts((prev) => ({ ...prev, [comment.id]: "" }));
+                }
+              }}
+              className="px-3 py-1 text-xs border border-gray-300 rounded text-gray-700 hover:bg-gray-50"
+            >
+              {isReplying ? "Cancel" : "Reply"}
+            </button>
+            {hasReplies && (
+              <button
+                onClick={() => setExpandedReplies((prev) => ({ ...prev, [comment.id]: !prev[comment.id] }))}
+                className="px-3 py-1 text-xs border border-gray-300 rounded text-gray-700 hover:bg-gray-50 flex items-center gap-1"
+              >
+                <svg 
+                  className={`w-3 h-3 transition-transform ${isExpanded ? "rotate-180" : ""}`} 
+                  fill="none" 
+                  stroke="currentColor" 
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+                Replies ({replyCount})
+              </button>
+            )}
+            <button
+              onClick={() => handleDeleteComment(comment.id)}
+              className="w-6 h-6 rounded-full bg-gray-100 hover:bg-red-50 flex items-center justify-center"
+            >
+              <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            {comment.suggested_replacement && (
+              <button className="w-6 h-6 rounded-full bg-[#4ade80] hover:bg-[#3bc96d] flex items-center justify-center">
+                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </button>
+            )}
+          </div>
+
+          {/* Reply Form */}
+          {isReplying && (
+            <div className="mt-3 pt-3 border-t border-gray-200">
+              <textarea
+                value={replyText}
+                onChange={(e) => setReplyTexts((prev) => ({ ...prev, [comment.id]: e.target.value }))}
+                placeholder="Write a reply..."
+                className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#4ade80] resize-none"
+                rows={2}
+              />
+              <div className="flex items-center gap-2 mt-2">
+                <button
+                  onClick={() => handleAddReply(comment.id)}
+                  disabled={!replyText.trim() || isAdding}
+                  className="px-3 py-1.5 bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-xs"
+                >
+                  {isAdding ? "Replying..." : "Reply"}
+                </button>
+                <button
+                  onClick={() => {
+                    setReplyingToCommentId(null);
+                    setReplyTexts((prev) => ({ ...prev, [comment.id]: "" }));
+                  }}
+                  className="px-3 py-1.5 text-xs border border-gray-300 rounded text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Render Replies - Only if expanded */}
+          {hasReplies && isExpanded && comment.replies && (
+            <div className="mt-3 space-y-3">
+              {comment.replies.map((reply) => renderComment(reply, depth + 1, comment))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
   };
 
   // Load collaborators when bookId is available
@@ -1373,76 +1617,141 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     }
   };
 
-  const handleQuickAction = async (action: "shorten" | "strengthen" | "clarify") => {
-    if (!selectedText || !currentTalkingPointId || !bookId || isApplyingQuickAction) return;
+  const handleQuickAction = async (action: "shorten" | "strengthen" | "clarify" | "expand" | "remove_repetition" | "regenerate" | "improve_flow" | "split_paragraph" | "turn_into_bullets" | "add_transition" | "rewrite_heading" | "suggest_subheading" | "give_example") => {
+    // Actions that work on talking point level don't require selected text
+    const talkingPointActions = ["rewrite_heading", "suggest_subheading"];
+    const requiresSelection = !talkingPointActions.includes(action);
+    
+    if (requiresSelection && (!selectedText || !currentTalkingPointId || !bookId || isApplyingQuickAction)) return;
+    if (!requiresSelection && (!currentTalkingPointId || !bookId || isApplyingQuickAction)) return;
 
     const activeTpId = currentTalkingPointId;
     setIsApplyingQuickAction(true);
 
     try {
+      // For talking point level actions, use the entire content
+      if (!activeTpId) return;
+      
+      const textToProcess = requiresSelection ? (selectedText || "") : (tpContents[activeTpId] || "");
+      
       const result = await quickTextAction({
-        book_id: bookId,
+        book_id: bookId!,
         talking_point_id: activeTpId,
-        selected_text: selectedText,
-        action: action,
+        selected_text: textToProcess,
+        action: action as "shorten" | "strengthen" | "clarify" | "expand" | "give_example",
       });
 
-      if (result.success && result.data.modified_text) {
+      if (result.success && result.data.modified_text && activeTpId) {
+        // Strip quotation marks from the response
+        let modifiedText = result.data.modified_text.trim();
+        // Remove surrounding quotes if present
+        if ((modifiedText.startsWith('"') && modifiedText.endsWith('"')) || 
+            (modifiedText.startsWith("'") && modifiedText.endsWith("'"))) {
+          modifiedText = modifiedText.slice(1, -1).trim();
+        }
+        
         const editorRef = editorRefs.current[activeTpId];
         const editor = editorRef?.current;
         
-        if (editor && selectionRange) {
+        // Actions that should prepend to content (headings)
+        const prependActions = ["rewrite_heading", "suggest_subheading"];
+        const shouldPrepend = prependActions.includes(action);
+        
+        if (requiresSelection && editor && selectionRange) {
           // Replace the selected text with the modified text using Tiptap commands
-          // This will automatically trigger onUpdate callback
           editor
             .chain()
             .focus()
             .setTextSelection({ from: selectionRange.from, to: selectionRange.to })
             .deleteSelection()
-            .insertContent(result.data.modified_text)
+            .insertContent(modifiedText)
             .run();
 
-          // The onUpdate callback will handle state updates automatically
-          // But we also update state here to ensure it's in sync
           setTimeout(() => {
             const newContent = editor.getHTML();
             setTpContents((prev) => ({ ...prev, [activeTpId]: newContent }));
           }, 0);
-        } else if (editor) {
-          // We have an editor but no selection range - update entire content
-          const currentContent = tpContents[activeTpId] || "";
-          const textToReplace = selectedText.trim();
-          
-          // Create new content with modified text
-          const modifiedContent = currentContent.replace(
-            new RegExp(textToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
-            result.data.modified_text
-          );
-          
-          // Update editor first, then state
-          editor.commands.setContent(modifiedContent);
-          setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
-          handleTpContentChange(activeTpId, modifiedContent);
-        } else {
+        } else if (editor && activeTpId) {
+          // For talking point level actions or when no selection
+          if (shouldPrepend) {
+            // Prepend heading to the top of the content
+            const currentContent = tpContents[activeTpId] || "";
+            const headingTag = action === "rewrite_heading" ? "h1" : "h2";
+            const headingHtml = `<${headingTag}>${modifiedText}</${headingTag}>`;
+            
+            // If content already starts with a heading, replace it; otherwise prepend
+            let newContent: string;
+            if (currentContent.trim().match(/^<h[1-6]/)) {
+              // Replace existing heading
+              newContent = currentContent.replace(/^<h[1-6][^>]*>.*?<\/h[1-6]>/, headingHtml);
+            } else {
+              // Prepend new heading
+              newContent = currentContent.trim() ? `${headingHtml}\n${currentContent}` : headingHtml;
+            }
+            
+            editor.commands.setContent(newContent);
+            setTpContents((prev) => ({ ...prev, [activeTpId]: newContent }));
+            handleTpContentChange(activeTpId, newContent);
+          } else if (requiresSelection && selectedText) {
+            // Try to find and replace selected text
+            const currentContent = tpContents[activeTpId] || "";
+            const textToReplace = selectedText.trim();
+            
+            const modifiedContent = currentContent.replace(
+              new RegExp(textToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
+              modifiedText
+            );
+            
+            editor.commands.setContent(modifiedContent);
+            setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
+            handleTpContentChange(activeTpId, modifiedContent);
+          } else {
+            // Replace entire content (for other talking point level actions)
+            editor.commands.setContent(modifiedText);
+            setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedText }));
+            handleTpContentChange(activeTpId, modifiedText);
+          }
+        } else if (activeTpId) {
           // No editor available - just update state
-          const currentContent = tpContents[activeTpId] || "";
-          const textToReplace = selectedText.trim();
-          
-          const modifiedContent = currentContent.replace(
-            new RegExp(textToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
-            result.data.modified_text
-          );
-          
-          setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
-          handleTpContentChange(activeTpId, modifiedContent);
+          if (shouldPrepend) {
+            const currentContent = tpContents[activeTpId] || "";
+            const headingTag = action === "rewrite_heading" ? "h1" : "h2";
+            const headingHtml = `<${headingTag}>${modifiedText}</${headingTag}>`;
+            
+            let newContent: string;
+            if (currentContent.trim().match(/^<h[1-6]/)) {
+              newContent = currentContent.replace(/^<h[1-6][^>]*>.*?<\/h[1-6]>/, headingHtml);
+            } else {
+              newContent = currentContent.trim() ? `${headingHtml}\n${currentContent}` : headingHtml;
+            }
+            
+            setTpContents((prev) => ({ ...prev, [activeTpId]: newContent }));
+            handleTpContentChange(activeTpId, newContent);
+          } else if (requiresSelection && selectedText) {
+            const currentContent = tpContents[activeTpId] || "";
+            const textToReplace = selectedText.trim();
+            
+            const modifiedContent = currentContent.replace(
+              new RegExp(textToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
+              modifiedText
+            );
+            
+            setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
+            handleTpContentChange(activeTpId, modifiedContent);
+          } else {
+            setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedText }));
+            handleTpContentChange(activeTpId, modifiedText);
+          }
         }
 
-        // Clear selection
-        setSelectedText("");
-        setSelectionPosition(null);
-        setSelectionRange(null);
-        if (window.getSelection) {
-          window.getSelection()?.removeAllRanges();
+        // Clear selection only if we had one
+        if (requiresSelection) {
+          setSelectedText("");
+          setSelectionPosition(null);
+          setSelectionRange(null);
+          if (window.getSelection) {
+            window.getSelection()?.removeAllRanges();
+          }
         }
       }
     } catch (error) {
@@ -1525,7 +1834,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       })()}
       
       {/* Left Sidebar - Contents/Outline (hidden when chapter assets modal is open) */}
-      <div className={`bg-[#011b2d] border-r border-gray-200 overflow-y-auto transition-all ${assetsModalOpen && currentChapterId ? 'w-0 hidden' : 'w-64'}`}>
+      <div className={`mt-13 bg-[#011b2d] border-r border-gray-200 overflow-y-auto transition-all ${assetsModalOpen && currentChapterId ? 'w-0 hidden' : 'w-64'}`}>
         <div className="p-4">
           <h3 className="text-sm font-semibold text-gray-400 mb-4">CONTENTS</h3>
           <hr className="border-gray-400" />
@@ -1605,7 +1914,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       </div>
 
       {/* Middle Editor Area */}
-      <div className="flex-1 flex flex-col bg-white overflow-hidden">
+      <div className="flex-1 flex flex-col bg-white overflow-hidden mt-15">
         {selectedSection ? (
           <>
             {/* Editor Header */}
@@ -1618,7 +1927,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             </div>
 
             {/* Editor Content */}
-            <div className="flex-1 relative overflow-hidden bg-gray-100">
+            <div className="flex-1 relative overflow-hidden bg-gray-100 ">
               {/* Main Talking Points Area */}
               <div className="h-full overflow-y-auto p-8">
                 <div className="max-w-3xl mx-auto space-y-6">
@@ -1781,6 +2090,24 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                   </svg>
                                   Clarify
                                 </button>
+                                <button
+                                  onClick={() => {
+                                    setActiveRightView("moreActions");
+                                    setSelectedText("");
+                                    setSelectionPosition(null);
+                                    setSelectionRange(null);
+                                    if (window.getSelection) {
+                                      window.getSelection()?.removeAllRanges();
+                                    }
+                                  }}
+                                  className="px-3 py-2 text-sm text-gray-200 rounded hover:bg-[#1a2a3a] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full text-left"
+                                  title="More actions"
+                                >
+                                  <svg className="w-4 h-4 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                                  </svg>
+                                  More Actions
+                                </button>
                               </div>
                               {/* Separator */}
                               <div className="border-t border-[#2d3a4a] my-1"></div>
@@ -1842,7 +2169,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       </div>
 
       {/* Right Sidebar - Comments & Chat with Toggle */}
-      <div className="flex border-l border-[#2d3a4a]">
+      <div className="flex border-l border-[#2d3a4a] mt-13">
         {/* Content Area */}
         <div className="w-80 bg-[#011b2d] flex flex-col flex-1 overflow-hidden" style={{
           backgroundImage: `url(${card2})`,
@@ -1851,96 +2178,42 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           backgroundRepeat: 'no-repeat'
         }}>
           {activeRightView === "comments" ? (
-            <div className="p-4">
-              <h3 className="text-sm font-semibold text-white mb-4">COMMENTS</h3>
-              
-              {/* Add Comment Form */}
-              <div className="mb-4">
-                <textarea
-                  value={newCommentText}
-                  onChange={(e) => setNewCommentText(e.target.value)}
-                  placeholder="Add a comment..."
-                  className="w-full px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#4ade80] resize-none"
-                  rows={3}
-                />
-                <button
-                  onClick={handleAddComment}
-                  disabled={!newCommentText.trim() || isAddingComment}
-                  className="mt-2 px-4 py-1.5 bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                >
-                  {isAddingComment ? "Adding..." : "Add Comment"}
-                </button>
+            <div className="flex flex-col h-full">
+              {/* Fixed Header and Form */}
+              <div className="p-4 shrink-0 border-b border-[#2d3a4a]">
+                <h3 className="text-sm font-semibold text-white mb-4">COMMENTS</h3>
+                
+                {/* Add Comment Form */}
+                <div>
+                  <textarea
+                    value={newCommentText}
+                    onChange={(e) => setNewCommentText(e.target.value)}
+                    placeholder="Add a comment..."
+                    className="w-full px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#4ade80] resize-none"
+                    rows={3}
+                  />
+                  <button
+                    onClick={handleAddComment}
+                    disabled={!newCommentText.trim() || isAddingComment}
+                    className="mt-2 px-4 py-1.5 bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                  >
+                    {isAddingComment ? "Adding..." : "Add Comment"}
+                  </button>
+                </div>
               </div>
 
-              {/* Comments List */}
-              {isLoadingComments ? (
-                <div className="text-center text-gray-400 text-sm py-4">Loading comments...</div>
-              ) : comments.length === 0 ? (
-                <div className="text-center text-gray-400 text-sm py-4">No comments yet. Be the first to comment!</div>
-              ) : (
-                <div className="space-y-3">
-                  {comments.map((comment) => (
-                    <div key={comment.id} className="bg-white rounded-lg p-3 text-sm">
-                      <div className="flex items-start gap-2 mb-2">
-                        <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-                          comment.comment_type === "ai" 
-                            ? "bg-[#4ade80]/20" 
-                            : comment.comment_type === "collaborator"
-                            ? "bg-blue-500/20"
-                            : "bg-gray-200"
-                        }`}>
-                          {comment.comment_type === "ai" ? (
-                            <svg className="w-4 h-4 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-                            </svg>
-                          ) : (
-                            <span className={`text-xs font-semibold ${
-                              comment.comment_type === "collaborator" ? "text-blue-600" : "text-gray-600"
-                            }`}>
-                              {comment.user_name ? comment.user_name.substring(0, 2).toUpperCase() : "U"}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex-1">
-                          <div className="text-gray-900 font-semibold mb-1">
-                            {comment.comment_type === "ai" 
-                              ? "AI Coach Review" 
-                              : comment.user_name || "User"}
-                          </div>
-                          <div className="text-gray-500 text-xs">
-                            {new Date(comment.created_at).toLocaleDateString()} {new Date(comment.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </div>
-                        </div>
-                      </div>
-                      <p className="text-gray-700 text-sm mt-2">{comment.text}</p>
-                      {comment.suggested_replacement && (
-                        <div className="mt-3 bg-gray-50 border border-gray-200 rounded p-2">
-                          <div className="text-xs font-semibold text-gray-600 mb-1">REPLACE WITH:</div>
-                          <p className="text-sm text-gray-700">{comment.suggested_replacement}</p>
-                        </div>
-                      )}
-                      <div className="flex items-center gap-2 mt-3">
-                        <button className="px-3 py-1 text-xs border border-gray-300 rounded text-gray-700 hover:bg-gray-50">Reply</button>
-                        <button
-                          onClick={() => handleDeleteComment(comment.id)}
-                          className="w-6 h-6 rounded-full bg-gray-100 hover:bg-red-50 flex items-center justify-center"
-                        >
-                          <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                        {comment.suggested_replacement && (
-                          <button className="w-6 h-6 rounded-full bg-[#4ade80] hover:bg-[#3bc96d] flex items-center justify-center">
-                            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {/* Scrollable Comments List */}
+              <div className="flex-1 overflow-y-auto p-4">
+                {isLoadingComments ? (
+                  <div className="text-center text-gray-400 text-sm py-4">Loading comments...</div>
+                ) : comments.length === 0 ? (
+                  <div className="text-center text-gray-400 text-sm py-4">No comments yet. Be the first to comment!</div>
+                ) : (
+                  <div className="space-y-3">
+                    {comments.map((comment) => renderComment(comment))}
+                  </div>
+                )}
+              </div>
             </div>
           ) : activeRightView === "changes" ? (
             <div className="flex flex-col h-full">
@@ -2189,7 +2462,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                 })()}
               </div>
             </div>
-          ) : (
+          ) : activeRightView === "chat" ? (
             <div className="flex flex-col h-full">
               {/* Chat Header */}
               <div className="p-4 border-b border-[#2d3a4a] shrink-0">
@@ -2291,7 +2564,161 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                 </button>
               </div>
             </div>
-          )}
+          ) : activeRightView === "moreActions" ? (
+            <div className="flex flex-col h-full bg-white overflow-hidden">
+              {/* Header */}
+              <div className="p-4 border-b border-gray-200 shrink-0 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-gray-900">More Actions</h3>
+                </div>
+                <button
+                  onClick={() => setActiveRightView("comments")}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Actions Content */}
+              <div className="flex-1 overflow-y-auto p-4">
+                {/* STRUCTURE & CLARITY */}
+                <div className="mb-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">STRUCTURE & CLARITY</h4>
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                      }
+                      label="Clarify text"
+                      onClick={() => handleQuickAction("clarify")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z" />
+                        </svg>
+                      }
+                      label="Shorten text"
+                      onClick={() => handleQuickAction("shorten")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                        </svg>
+                      }
+                      label="Expand explanation"
+                      onClick={() => handleQuickAction("expand")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      }
+                      label="Strengthen argument"
+                      onClick={() => handleQuickAction("strengthen")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                        </svg>
+                      }
+                      label="Remove repetition"
+                      onClick={() => handleQuickAction("remove_repetition")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                      }
+                      label="Regenerate selected"
+                      onClick={() => handleQuickAction("regenerate")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                  </div>
+                </div>
+
+                {/* STRUCTURE & FLOW */}
+                <div className="mb-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">STRUCTURE & FLOW</h4>
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      }
+                      label="Improve flow"
+                      onClick={() => handleQuickAction("improve_flow")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                      }
+                      label="Split paragraph"
+                      onClick={() => handleQuickAction("split_paragraph")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                      }
+                      label="Turn into bullets"
+                      onClick={() => handleQuickAction("turn_into_bullets")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={<span className="text-lg font-bold">H1</span>}
+                      label="Rewrite heading"
+                      onClick={() => handleQuickAction("rewrite_heading")}
+                      disabled={!currentTalkingPointId || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={<span className="text-lg font-bold">H2</span>}
+                      label="Suggest subheading"
+                      onClick={() => handleQuickAction("suggest_subheading")}
+                      disabled={!currentTalkingPointId || isApplyingQuickAction}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                        </svg>
+                      }
+                      label="Add transition sentence"
+                      onClick={() => handleQuickAction("add_transition")}
+                      disabled={!selectedText || isApplyingQuickAction}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Navigation Icons - Far Right Edge */}
@@ -2327,6 +2754,18 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </button>
+          <button
+            onClick={() => setActiveRightView(activeRightView === "moreActions" ? "comments" : "moreActions")}
+            className={`p-2 rounded transition-colors ${
+              activeRightView === "moreActions" ? "bg-[#4ade80] text-white" : "text-gray-400 hover:text-white"
+            }`}
+            title="More Actions"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 2L9.09 8.26L2 9.27L7 14.14L5.18 21.02L12 17.77L18.82 21.02L17 14.14L22 9.27L14.91 8.26L12 2Z" />
+              <path d="M16 16L18 18L20 16L18 14L16 16Z" fill="currentColor" opacity="0.6" />
             </svg>
           </button>
           <button

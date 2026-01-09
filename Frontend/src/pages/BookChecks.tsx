@@ -146,9 +146,9 @@ export default function BookChecks() {
   const categories: CategoryKey[] = ["editorial", "legal", "platform"];
 
   return (
-    <div className="min-h-screen bg-[#011B2C] text-white p-8">
+    <div className="min-h-screen bg-[#011B2C] text-white p-8 ">
       {/* Header */}
-      <div className="mb-8">
+      <div className="mb-8 mt-10">
         <h1 className="text-3xl font-bold text-white mb-2">Whole-Book Checks</h1>
         <p className="text-gray-400">Automated evaluation of your manuscript's quality, legality, and compliance.</p>
       </div>

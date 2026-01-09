@@ -199,13 +199,13 @@ export default function OutlineView({
   };
 
   return (
-    <div className="h-full bg-gray-50 overflow-y-auto p-8" style={{
+    <div className="h-full bg-gray-50 overflow-y-auto p-8 " style={{
       backgroundImage: `url(${background2})`,
       backgroundSize: 'cover',
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat'
     }}>
-      <div className="max-w-6xl mx-auto p-8 bg-gray-100 rounded-lg">
+      <div className="max-w-6xl mx-auto p-8 bg-gray-100 rounded-lg mt-10">
         {/* Header */}
         <div className="flex items-center justify-between mb-6 p-8 ">
           <div>
