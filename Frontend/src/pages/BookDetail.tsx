@@ -27,12 +27,17 @@ export default function BookDetail() {
     return (tabParam as Tab) || "position";
   });
   const [outline, setOutline] = useState<BookDetail | null>(null);
+  const [hasSetInitialTab, setHasSetInitialTab] = useState(() => {
+    // Check if URL param exists on initial load
+    return !!searchParams.get("tab");
+  });
   
   // Handle URL parameters for navigation from checks
   useEffect(() => {
     const tabParam = searchParams.get("tab");
     if (tabParam && ["overview", "position", "outline", "editor", "checks", "design", "publish"].includes(tabParam)) {
       setActiveTab(tabParam as Tab);
+      setHasSetInitialTab(true); // Mark as set if URL param exists
     }
   }, [searchParams]);
 
@@ -43,11 +48,32 @@ export default function BookDetail() {
     if (res.success) {
       setBook(res.data);
       setOutline(res.data);
+      
+      // Set initial tab based on user role and outline status (only if not already set via URL param)
+      if (!hasSetInitialTab && !searchParams.get("tab")) {
+        const isCollaborator = res.data.is_collaboration && res.data.collaborator_role;
+        const hasOutline = res.data.chapters && res.data.chapters.length > 0;
+        
+        if (isCollaborator) {
+          // Collaborators always open editor tab
+          setActiveTab("editor");
+        } else if (hasOutline) {
+          // Owners open editor tab only if outline exists
+          setActiveTab("editor");
+        } else {
+          // Owners without outline open position tab
+          setActiveTab("position");
+        }
+        setHasSetInitialTab(true);
+      }
     }
     setLoading(false);
   };
 
   useEffect(() => {
+    // Reset flag when book ID changes
+    const tabParam = searchParams.get("tab");
+    setHasSetInitialTab(!!tabParam);
     loadBook();
   }, [id]);
 
@@ -158,20 +184,33 @@ export default function BookDetail() {
 
           {/* Right: Tabs */}
           <div className="flex items-center gap-1">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2  flex items-center gap-2 text-sm font-medium transition-colors ${
-                  activeTab === tab.id
-                    ? "bg-[#004E66] text-white"
-                    : "text-gray-400 hover:text-white"
-                }`}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-              </button>
-            ))}
+            {tabs.map((tab) => {
+              const isRestrictedTab = ["overview", "position", "outline", "checks", "publish"].includes(tab.id);
+              const isViewerOrCommenter = book.collaborator_role === "viewer" || book.collaborator_role === "commenter";
+              const isDisabled = isRestrictedTab && isViewerOrCommenter;
+              
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    if (isDisabled) return;
+                    setActiveTab(tab.id);
+                  }}
+                  disabled={isDisabled}
+                  className={`px-4 py-2 flex items-center gap-2 text-sm font-medium transition-colors ${
+                    isDisabled
+                      ? "text-gray-600 opacity-50 cursor-not-allowed"
+                      : activeTab === tab.id
+                      ? "bg-[#004E66] text-white"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                  title={isDisabled ? "Not available for your role" : tab.label}
+                >
+                  {tab.icon}
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>

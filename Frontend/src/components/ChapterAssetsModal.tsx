@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { uploadChapterAsset, listChapterAssets } from "../utils/api";
+import { uploadChapterAsset, listChapterAssets, deleteChapterAsset } from "../utils/api";
 
 type ChapterAsset = {
   id: number;
@@ -29,6 +29,7 @@ export default function ChapterAssetsModal({
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [deletingAssetId, setDeletingAssetId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -117,6 +118,35 @@ export default function ChapterAssetsModal({
   const handleGenerate = () => {
     onGenerate(Array.from(selectedAssetIds));
     onClose();
+  };
+
+  const handleDeleteAsset = async (assetId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm("Are you sure you want to delete this asset?")) {
+      return;
+    }
+
+    setDeletingAssetId(assetId);
+    try {
+      const result = await deleteChapterAsset(assetId);
+      if (result.success) {
+        // Remove from local state
+        setAssets((prev) => prev.filter((a) => a.id !== assetId));
+        // Remove from selected if selected
+        setSelectedAssetIds((prev) => {
+          const newSet = new Set(prev);
+          newSet.delete(assetId);
+          return newSet;
+        });
+      } else {
+        alert(result.error || "Failed to delete asset");
+      }
+    } catch (error) {
+      console.error("Error deleting asset:", error);
+      alert("Failed to delete asset");
+    } finally {
+      setDeletingAssetId(null);
+    }
   };
 
   const getFileIcon = (fileType: string) => {
@@ -218,6 +248,22 @@ export default function ChapterAssetsModal({
                     {getFileIcon(asset.file_type)}
                   </div>
                   <span className="text-white text-sm flex-1 truncate">{asset.filename}</span>
+                  <button
+                    onClick={(e) => handleDeleteAsset(asset.id, e)}
+                    disabled={deletingAssetId === asset.id}
+                    className="text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                    title="Delete asset"
+                  >
+                    {deletingAssetId === asset.id ? (
+                      <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    )}
+                  </button>
                 </div>
               ))}
             </div>

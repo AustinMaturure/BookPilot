@@ -361,6 +361,18 @@ export async function uploadChapterAsset(data: {
   }
 }
 
+export async function deleteChapterAsset(assetId: number) {
+  try {
+    const response = await api.delete(`pilot/api/assets/${assetId}/delete/`);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
 export async function listChapterAssets(data: {
   book_id: number;
   talking_point_id?: number;
@@ -551,6 +563,18 @@ export async function removeCollaborator(book_id: number, collaborator_id: numbe
   try {
     const response = await api.delete(`pilot/api/books/${book_id}/collaborators/${collaborator_id}/`);
     return { success: true, status: response.status };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function updateCollaboratorRole(book_id: number, collaborator_id: number, role: "editor" | "viewer" | "commenter") {
+  try {
+    const response = await api.patch(`pilot/api/books/${book_id}/collaborators/${collaborator_id}/role/`, { role });
+    return { success: true, status: response.status, data: response.data };
   } catch (err: unknown) {
     if (err instanceof Error) {
       return { success: false, error: err.message };

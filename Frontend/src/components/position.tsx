@@ -550,10 +550,10 @@ export default function Position({
                 audience.map((aud, idx) => (
                   <span
                     key={idx}
-                    className={`px-3 py-2 rounded-lg text-xs font-medium backdrop-blur-sm ${
+                    className={` rounded-lg text-sm font-medium   text-white ${
                       idx === 0
-                        ? "bg-[#4ade80] text-[#0a1a2e] shadow-lg"
-                        : "bg-white/10 text-gray-200 border border-white/20"
+                        ? " "
+                        : " text-gray-200 border border-white/20"
                     }`}
                   >
                     {aud.charAt(0).toUpperCase() + aud.slice(1)}

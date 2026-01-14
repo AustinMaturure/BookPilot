@@ -6,7 +6,7 @@ import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import Highlight from "@tiptap/extension-highlight";
 import type { BookOutline } from "./position";
-import { updateTalkingPoint, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, getCollaborationState, createTalkingPoint, createSection, type CommentType, type Collaborator, type ContentChange } from "../utils/api";
+import { updateTalkingPoint, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, getCollaborationState, createTalkingPoint, createSection, type CommentType, type Collaborator, type ContentChange } from "../utils/api";
 import ChapterAssetsModal from "./ChapterAssetsModal";
 import ChapterAssetsPanel from "./ChapterAssetsPanel";
 import { ChangeTrackingExtension } from "./ChangeTrackingExtension";
@@ -62,7 +62,7 @@ const ActionButton = ({ icon, label, onClick, disabled }: {
     <div className="text-gray-600 group-hover:text-gray-900 mb-1">
       {icon}
     </div>
-    <span className="text-xs text-gray-600 group-hover:text-gray-900 text-center leading-tight">{label}</span>
+    <span className="text-[10px] text-gray-600 group-hover:text-gray-900 text-center leading-tight">{label}</span>
   </button>
 );
 
@@ -81,7 +81,7 @@ type TiptapEditorProps = {
   enableCollaboration?: boolean;
 };
 
-function TiptapEditor({ content, onUpdate, onBlur, placeholder, onTextSelect, editorRef, isCollaborator = false, hasChanges = false, pendingChanges = [], talkingPointId, enableCollaboration = false }: TiptapEditorProps) {
+function TiptapEditor({ content, onUpdate, onBlur, placeholder, onTextSelect, editorRef, isCollaborator = false, hasChanges = false, pendingChanges = [], talkingPointId, enableCollaboration = false, isReadOnly = false }: TiptapEditorProps & { isReadOnly?: boolean }) {
   const isUpdatingRef = useRef(false);
   const isInitialMountRef = useRef(true);
   const isProgrammaticUpdateRef = useRef(false); // Track programmatic content updates
@@ -180,6 +180,7 @@ function TiptapEditor({ content, onUpdate, onBlur, placeholder, onTextSelect, ed
   }, [enableCollaboration, collabInitialized, talkingPointId, collabVersion, pendingChanges, isCollaborator, hasChanges, placeholder]);
 
   const editor = useEditor({
+    editable: !isReadOnly,
     extensions,
     content: cleanContent,
     // Collaborators can edit, but their edits become suggestions (not direct changes)
@@ -533,6 +534,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [isInviting, setIsInviting] = useState(false);
   const [contentChanges, setContentChanges] = useState<ContentChange[]>([]);
   const [isLoadingChanges, setIsLoadingChanges] = useState(false);
+  const [hasAutoOpenedChanges, setHasAutoOpenedChanges] = useState(false);
   const isBookOwner = !isCollaboration;
   // Track original content for change detection (for collaborators)
   const [originalContents, setOriginalContents] = useState<Record<number, string>>({});
@@ -766,6 +768,22 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     // Removed auto-polling - changes will only load when talking point changes or on manual refresh
   }, [currentTalkingPointId, selectedSection, bookId]);
 
+  // Auto-open changes tab for owners if there are pending changes (only once when changes are first loaded)
+  useEffect(() => {
+    if (isBookOwner && contentChanges.length > 0 && !hasAutoOpenedChanges && !isLoadingChanges) {
+      const pendingCount = contentChanges.filter(c => !c.status || c.status === "pending").length;
+      if (pendingCount > 0 && activeRightView === "comments") {
+        setActiveRightView("changes");
+        setHasAutoOpenedChanges(true);
+      }
+    }
+  }, [contentChanges, isBookOwner, isLoadingChanges, hasAutoOpenedChanges, activeRightView]);
+  
+  // Reset auto-open flag when section changes
+  useEffect(() => {
+    setHasAutoOpenedChanges(false);
+  }, [selectedSection]);
+
   const handleSectionClick = (chapterId: number, sectionId: number, sectionTitle: string) => {
     setSelectedItem({ type: "section", chapterId, sectionId, sectionTitle });
     // Clear chat when switching sections
@@ -821,6 +839,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   };
 
   const handleTpContentChange = (tpId: number, content: string) => {
+    // Only editors and owners can edit content
+    if (!isBookOwner && collaboratorRole !== "editor") {
+      return;
+    }
+    
     // Strip change indicators before storing
     const cleanContent = stripChangeIndicators(content);
     
@@ -902,6 +925,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           // Fallback to full reload
           await loadChanges();
         }
+        
+        // Open the changes tab after creating suggestion
+        setActiveRightView("changes");
       } else {
         console.error("❌ Failed to create suggestion:", result);
         alert("Failed to create suggestion. Please try again.");
@@ -1034,7 +1060,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       
       // Approve the change in backend (status change only - backend never touches content)
       const result = await approveContentChange(change.id);
-      if (result.success) {
+        if (result.success) {
         console.log("✅ Change approved, applied, and saved");
         
         // Reload changes to update UI
@@ -1109,7 +1135,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
   const handleOpenAssetsModal = (tpId?: number, chapterId?: number) => {
     if (tpId) {
-      setCurrentTalkingPointId(tpId);
+    setCurrentTalkingPointId(tpId);
       setCurrentChapterId(null);
     } else if (chapterId) {
       setCurrentChapterId(chapterId);
@@ -1125,9 +1151,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     
     // If generating for a talking point
     if (currentTalkingPointId) {
-      const tp = selectedSection?.talking_points?.find((t) => t.id === currentTalkingPointId);
-      if (tp) {
-        await handleGenerateText(currentTalkingPointId, tp.text || `Talking Point`, assetIds);
+    const tp = selectedSection?.talking_points?.find((t) => t.id === currentTalkingPointId);
+    if (tp) {
+      await handleGenerateText(currentTalkingPointId, tp.text || `Talking Point`, assetIds);
       }
     }
     // If generating for a chapter (create talking points)
@@ -1311,6 +1337,12 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   };
 
   const handleAddComment = async () => {
+    // Viewers cannot add comments
+    if (collaboratorRole === "viewer") {
+      alert("Viewers cannot add comments. Please ask the book owner to change your role.");
+      return;
+    }
+    
     const activeTpId = currentTalkingPointId || (selectedSection?.talking_points?.[0]?.id ?? null);
     if (!newCommentText.trim() || !activeTpId || isAddingComment) return;
 
@@ -1617,7 +1649,29 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     }
   };
 
+  const handleUpdateCollaboratorRole = async (collaboratorId: number, newRole: "editor" | "viewer" | "commenter") => {
+    if (!bookId) return;
+
+    try {
+      const result = await updateCollaboratorRole(bookId, collaboratorId, newRole);
+      if (result.success && result.data) {
+        setCollaborators((prev) =>
+          prev.map((c) => (c.id === collaboratorId ? { ...c, role: newRole } : c))
+        );
+      }
+    } catch (error) {
+      console.error("Error updating collaborator role:", error);
+      alert("Failed to update collaborator role. Please try again.");
+    }
+  };
+
   const handleQuickAction = async (action: "shorten" | "strengthen" | "clarify" | "expand" | "remove_repetition" | "regenerate" | "improve_flow" | "split_paragraph" | "turn_into_bullets" | "add_transition" | "rewrite_heading" | "suggest_subheading" | "give_example") => {
+    // Only editors can perform quick actions
+    if (!isBookOwner && collaboratorRole !== "editor") {
+      alert("Only editors can perform this action. Please ask the book owner to change your role.");
+      return;
+    }
+    
     // Actions that work on talking point level don't require selected text
     const talkingPointActions = ["rewrite_heading", "suggest_subheading"];
     const requiresSelection = !talkingPointActions.includes(action);
@@ -1694,18 +1748,18 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             handleTpContentChange(activeTpId, newContent);
           } else if (requiresSelection && selectedText) {
             // Try to find and replace selected text
-            const currentContent = tpContents[activeTpId] || "";
-            const textToReplace = selectedText.trim();
-            
-            const modifiedContent = currentContent.replace(
-              new RegExp(textToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
+          const currentContent = tpContents[activeTpId] || "";
+          const textToReplace = selectedText.trim();
+          
+          const modifiedContent = currentContent.replace(
+            new RegExp(textToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
               modifiedText
-            );
-            
-            editor.commands.setContent(modifiedContent);
-            setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
-            handleTpContentChange(activeTpId, modifiedContent);
-          } else {
+          );
+          
+          editor.commands.setContent(modifiedContent);
+          setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
+          handleTpContentChange(activeTpId, modifiedContent);
+        } else {
             // Replace entire content (for other talking point level actions)
             editor.commands.setContent(modifiedText);
             setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedText }));
@@ -1728,16 +1782,16 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             setTpContents((prev) => ({ ...prev, [activeTpId]: newContent }));
             handleTpContentChange(activeTpId, newContent);
           } else if (requiresSelection && selectedText) {
-            const currentContent = tpContents[activeTpId] || "";
-            const textToReplace = selectedText.trim();
-            
-            const modifiedContent = currentContent.replace(
-              new RegExp(textToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
+          const currentContent = tpContents[activeTpId] || "";
+          const textToReplace = selectedText.trim();
+          
+          const modifiedContent = currentContent.replace(
+            new RegExp(textToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
               modifiedText
-            );
-            
-            setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
-            handleTpContentChange(activeTpId, modifiedContent);
+          );
+          
+          setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
+          handleTpContentChange(activeTpId, modifiedContent);
           } else {
             setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedText }));
             handleTpContentChange(activeTpId, modifiedText);
@@ -1746,11 +1800,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
         // Clear selection only if we had one
         if (requiresSelection) {
-          setSelectedText("");
-          setSelectionPosition(null);
-          setSelectionRange(null);
-          if (window.getSelection) {
-            window.getSelection()?.removeAllRanges();
+        setSelectedText("");
+        setSelectionPosition(null);
+        setSelectionRange(null);
+        if (window.getSelection) {
+          window.getSelection()?.removeAllRanges();
           }
         }
       }
@@ -1846,33 +1900,39 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               return (
                 <div key={chapterId}>
                   <div className="flex items-center gap-2 w-full">
-                    <button
-                      onClick={() =>
-                        setExpandedChapters((prev) => ({
-                          ...prev,
-                          [chapterId]: !prev[chapterId],
-                        }))
-                      }
+                  <button
+                    onClick={() =>
+                      setExpandedChapters((prev) => ({
+                        ...prev,
+                        [chapterId]: !prev[chapterId],
+                      }))
+                    }
                       className="flex-1 text-left px-3 py-2 text-sm font-semibold text-white hover:bg-[#011b2d]/50 rounded flex items-center gap-2"
+                  >
+                    <svg
+                      className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
                     >
-                      <svg
-                        className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                      <span>PART {ci + 1}: {chapter.title}</span>
-                    </button>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span> {chapter.title}</span>
+                  </button>
                     {chapterId > 0 && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (!isBookOwner && collaboratorRole !== "editor") return;
                           handleOpenAssetsModal(undefined, chapterId);
                         }}
-                        className="px-2 py-2 text-gray-400 hover:text-white hover:bg-[#011b2d]/50 rounded transition-colors"
-                        title="Chapter Assets"
+                        disabled={!isBookOwner && collaboratorRole !== "editor"}
+                        className={`px-2 py-2 rounded transition-colors ${
+                          !isBookOwner && collaboratorRole !== "editor"
+                            ? "text-gray-600 opacity-50 cursor-not-allowed"
+                            : "text-gray-400 hover:text-white hover:bg-[#011b2d]/50"
+                        }`}
+                        title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can access assets" : "Chapter Assets"}
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -1927,7 +1987,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             </div>
 
             {/* Editor Content */}
-            <div className="flex-1 relative overflow-hidden bg-gray-100 ">
+            <div className="flex-1 relative overflow-hidden  bg-gray-100 ">
               {/* Main Talking Points Area */}
               <div className="h-full overflow-y-auto p-8">
                 <div className="max-w-3xl mx-auto space-y-6">
@@ -1949,9 +2009,17 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           </div>
                           <div className="flex items-center gap-2">
                             <button
-                              onClick={() => handleOpenAssetsModal(tpId)}
-                              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700 flex items-center gap-2"
-                              title="Add files for context"
+                              onClick={() => {
+                                if (!isBookOwner && collaboratorRole !== "editor") return;
+                                handleOpenAssetsModal(tpId);
+                              }}
+                              disabled={!isBookOwner && collaboratorRole !== "editor"}
+                              className={`px-3 py-1.5 text-sm border rounded-lg flex items-center gap-2 ${
+                                !isBookOwner && collaboratorRole !== "editor"
+                                  ? "border-gray-200 text-gray-400 bg-gray-50 cursor-not-allowed opacity-50"
+                                  : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                              }`}
+                              title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can access assets" : "Add files for context"}
                             >
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -1959,9 +2027,17 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               <span>Assets</span>
                             </button>
                             <button
-                              onClick={() => handleGenerateText(tpId, tp.text || `Talking Point ${ti + 1}`, selectedAssetIds)}
-                              disabled={isGenerating || !tp.text}
-                              className="px-3 py-1.5 text-sm bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                              onClick={() => {
+                                if (!isBookOwner && collaboratorRole !== "editor") return;
+                                handleGenerateText(tpId, tp.text || `Talking Point ${ti + 1}`, selectedAssetIds);
+                              }}
+                              disabled={isGenerating || !tp.text || (!isBookOwner && collaboratorRole !== "editor")}
+                              className={`px-3 py-1.5 text-sm rounded-lg flex items-center gap-2 ${
+                                !isBookOwner && collaboratorRole !== "editor"
+                                  ? "bg-gray-300 text-gray-500 cursor-not-allowed opacity-50"
+                                  : "bg-[#4ade80] text-white hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed"
+                              }`}
+                              title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can generate text" : "Generate Text"}
                             >
                               {isGenerating ? (
                                 <>
@@ -2010,14 +2086,15 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               }
                               return editorRefs.current[tpId];
                             })()}
-                            isCollaborator={!isBookOwner && collaboratorRole !== "viewer"}
+                            isCollaborator={!isBookOwner && collaboratorRole === "editor"}
                             hasChanges={hasUnsavedChanges[tpId] || false}
                             pendingChanges={contentChanges.filter(c => c.talking_point === tpId && c.status === "pending")}
                             talkingPointId={tpId}
                             enableCollaboration={isCollaboration && (isBookOwner || collaboratorRole === "editor")}
+                            isReadOnly={!isBookOwner && collaboratorRole !== "editor"}
                           />
-                          {/* Suggest Edit Button - for collaborators only */}
-                          {!isBookOwner && collaboratorRole !== "viewer" && (() => {
+                          {/* Suggest Edit Button - for editors only */}
+                          {!isBookOwner && collaboratorRole === "editor" && (() => {
                             // FIX: Only show button if there are actual edits (content differs from original)
                             const hasEdits = originalContents[tpId] !== undefined && 
                                             tpContents[tpId] !== undefined &&
@@ -2030,17 +2107,17 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             if (!hasEdits || !hasCapturedSteps) return null;
                             
                             return (
-                              <div className="mt-2 flex justify-end">
-                                <button
-                                  onClick={() => handleSuggestEdit(tpId)}
-                                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 text-sm font-medium"
-                                >
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                  </svg>
+                            <div className="mt-2 flex justify-end">
+                              <button
+                                onClick={() => handleSuggestEdit(tpId)}
+                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 text-sm font-medium"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
                                   Suggest Edit ({capturedStepsForTp.length} steps)
-                                </button>
-                              </div>
+                              </button>
+                            </div>
                             );
                           })()}
                           {/* Quick Actions & Add to Chat - appears when text is selected */}
@@ -2169,7 +2246,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       </div>
 
       {/* Right Sidebar - Comments & Chat with Toggle */}
-      <div className="flex border-l border-[#2d3a4a] mt-13">
+      <div className="flex border-l border-[#2d3a4a] mt-13 overflow-hidden">
         {/* Content Area */}
         <div className="w-80 bg-[#011b2d] flex flex-col flex-1 overflow-hidden" style={{
           backgroundImage: `url(${card2})`,
@@ -2181,39 +2258,44 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             <div className="flex flex-col h-full">
               {/* Fixed Header and Form */}
               <div className="p-4 shrink-0 border-b border-[#2d3a4a]">
-                <h3 className="text-sm font-semibold text-white mb-4">COMMENTS</h3>
-                
-                {/* Add Comment Form */}
-                <div>
-                  <textarea
-                    value={newCommentText}
-                    onChange={(e) => setNewCommentText(e.target.value)}
-                    placeholder="Add a comment..."
-                    className="w-full px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#4ade80] resize-none"
-                    rows={3}
-                  />
-                  <button
-                    onClick={handleAddComment}
-                    disabled={!newCommentText.trim() || isAddingComment}
-                    className="mt-2 px-4 py-1.5 bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                  >
-                    {isAddingComment ? "Adding..." : "Add Comment"}
-                  </button>
-                </div>
+              <h3 className="text-sm font-semibold text-white mb-4">COMMENTS</h3>
+              
+                {/* Add Comment Form - Hidden for viewers */}
+                {collaboratorRole !== "viewer" && (
+                  <div>
+                <textarea
+                  value={newCommentText}
+                  onChange={(e) => setNewCommentText(e.target.value)}
+                  placeholder="Add a comment..."
+                  className="w-full px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#4ade80] resize-none"
+                  rows={3}
+                />
+                <button
+                  onClick={handleAddComment}
+                  disabled={!newCommentText.trim() || isAddingComment}
+                  className="mt-2 px-4 py-1.5 bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                >
+                  {isAddingComment ? "Adding..." : "Add Comment"}
+                </button>
+                  </div>
+                )}
+                {collaboratorRole === "viewer" && (
+                  <div className="text-xs text-gray-400 italic">Viewers can only view comments</div>
+                )}
               </div>
 
               {/* Scrollable Comments List */}
               <div className="flex-1 overflow-y-auto p-4">
-                {isLoadingComments ? (
-                  <div className="text-center text-gray-400 text-sm py-4">Loading comments...</div>
-                ) : comments.length === 0 ? (
-                  <div className="text-center text-gray-400 text-sm py-4">No comments yet. Be the first to comment!</div>
-                ) : (
-                  <div className="space-y-3">
+              {isLoadingComments ? (
+                <div className="text-center text-gray-400 text-sm py-4">Loading comments...</div>
+              ) : comments.length === 0 ? (
+                <div className="text-center text-gray-400 text-sm py-4">No comments yet. Be the first to comment!</div>
+              ) : (
+                <div className="space-y-3">
                     {comments.map((comment) => renderComment(comment))}
-                  </div>
-                )}
-              </div>
+                        </div>
+                        )}
+                      </div>
             </div>
           ) : activeRightView === "changes" ? (
             <div className="flex flex-col h-full">
@@ -2276,6 +2358,13 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     
                     console.log("Collaborator view - relevant changes:", relevantChanges.length, "changes:", relevantChanges.map(c => ({ id: c.id, tp: c.talking_point, status: c.status })));
                   }
+                  
+                  // Sort by created_at descending (newest first)
+                  relevantChanges = relevantChanges.sort((a, b) => {
+                    const dateA = new Date(a.created_at).getTime();
+                    const dateB = new Date(b.created_at).getTime();
+                    return dateB - dateA; // Descending order (newest first)
+                  });
                   
                   if (relevantChanges.length === 0) {
                     return (
@@ -2716,6 +2805,190 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     />
                   </div>
                 </div>
+
+                {/* NONFICTION PACKAGING */}
+                <div className="mb-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">NONFICTION PACKAGING</h4>
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
+                      }
+                      label="Create simple model"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0V4a2 2 0 012-2h14a2 2 0 012 2v16a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                        </svg>
+                      }
+                      label="Compare in table"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                        </svg>
+                      }
+                      label="Add key takeaways"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 16a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3zM14 16a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1h-4a1 1 0 01-1-1v-3z" />
+                        </svg>
+                      }
+                      label="Suggest visual model"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0V4a2 2 0 012-2h14a2 2 0 012 2v16a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                        </svg>
+                      }
+                      label="Suggest table structure"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
+                        </svg>
+                      }
+                      label="Add numbered framework"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                  </div>
+                </div>
+
+                {/* EXAMPLES & EVIDENCE */}
+                <div className="mb-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">EXAMPLES & EVIDENCE</h4>
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                      }
+                      label="Add example"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                        </svg>
+                      }
+                      label="Add story / case"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                      }
+                      label="Add evidence / rationale"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                      }
+                      label="Add quote / blockquote"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                        </svg>
+                      }
+                      label="Add source to footnote"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                  </div>
+                </div>
+                  {/* FORMATTING */}
+                  <div className="mb-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">FORMATTING</h4>
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                        </svg>
+                      }
+                      label="Convert to bullet list"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
+                      }
+                      label="Convert to paragraph"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                      }
+                      label="Rewrite chapter intro"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                    <ActionButton
+                      icon={
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                      }
+                      label="Rewrite Chapter Summary"
+                      onClick={() => {}}
+                      disabled={true}
+                    />
+                  </div>
+                </div>
+
+
               </div>
             </div>
           ) : null}
@@ -2724,44 +2997,80 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         {/* Navigation Icons - Far Right Edge */}
         <div className="w-12 bg-[#0a1a2e] border-l border-[#2d3a4a] flex flex-col items-center py-4 gap-4 shrink-0">
           <button
-            onClick={() => setActiveRightView("comments")}
+            onClick={() => {
+              if (collaboratorRole === "viewer") return;
+              setActiveRightView("comments");
+            }}
+            disabled={collaboratorRole === "viewer"}
             className={`p-2 rounded transition-colors ${
-              activeRightView === "comments" ? "bg-[#2d4a3e] text-[#4ade80]" : "text-gray-400 hover:text-white"
+              collaboratorRole === "viewer"
+                ? "text-gray-600 opacity-50 cursor-not-allowed"
+                : activeRightView === "comments" ? "bg-[#2d4a3e] text-[#4ade80]" : "text-gray-400 hover:text-white"
             }`}
-            title="Comments"
+            title={collaboratorRole === "viewer" ? "Viewers cannot comment" : "Comments"}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
             </svg>
           </button>
           <button
-            onClick={() => setActiveRightView("chat")}
+            onClick={() => {
+              if (collaboratorRole === "viewer") return;
+              setActiveRightView("chat");
+            }}
+            disabled={collaboratorRole === "viewer"}
             className={`p-2 rounded transition-colors ${
-              activeRightView === "chat" ? "bg-[#2d4a3e] text-[#4ade80]" : "text-gray-400 hover:text-white"
+              collaboratorRole === "viewer"
+                ? "text-gray-600 opacity-50 cursor-not-allowed"
+                : activeRightView === "chat" ? "bg-[#2d4a3e] text-[#4ade80]" : "text-gray-400 hover:text-white"
             }`}
-            title="Chat"
+            title={collaboratorRole === "viewer" ? "Viewers cannot use chat" : "Chat"}
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           </button>
           <button
-            onClick={() => setActiveRightView("changes")}
-            className={`p-2 rounded transition-colors ${
-              activeRightView === "changes" ? "bg-[#2d4a3e] text-[#4ade80]" : "text-gray-400 hover:text-white"
+            onClick={() => {
+              if (!isBookOwner && collaboratorRole !== "editor") return;
+              setActiveRightView("changes");
+            }}
+            disabled={!isBookOwner && collaboratorRole !== "editor"}
+            className={`p-2 rounded transition-colors relative ${
+              !isBookOwner && collaboratorRole !== "editor"
+                ? "text-gray-600 opacity-50 cursor-not-allowed"
+                : activeRightView === "changes" ? "bg-[#2d4a3e] text-[#4ade80]" : "text-gray-400 hover:text-white"
             }`}
-            title="Changes"
+            title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can view changes" : "Changes"}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
             </svg>
+            {(() => {
+              if (!isBookOwner && collaboratorRole !== "editor") return null;
+              const pendingCount = contentChanges.filter(c => !c.status || c.status === "pending").length;
+              if (pendingCount > 0) {
+                return (
+                  <span className="absolute -top-1 -right-1 bg-yellow-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center border-2 border-[#0a1a2e]">
+                    {pendingCount > 9 ? "9+" : pendingCount}
+                  </span>
+                );
+              }
+              return null;
+            })()}
           </button>
           <button
-            onClick={() => setActiveRightView(activeRightView === "moreActions" ? "comments" : "moreActions")}
+            onClick={() => {
+              if (!isBookOwner && collaboratorRole !== "editor") return;
+              setActiveRightView(activeRightView === "moreActions" ? "comments" : "moreActions");
+            }}
+            disabled={!isBookOwner && collaboratorRole !== "editor"}
             className={`p-2 rounded transition-colors ${
-              activeRightView === "moreActions" ? "bg-[#4ade80] text-white" : "text-gray-400 hover:text-white"
+              !isBookOwner && collaboratorRole !== "editor"
+                ? "text-gray-600 opacity-50 cursor-not-allowed"
+                : activeRightView === "moreActions" ? "bg-[#4ade80] text-white" : "text-gray-400 hover:text-white"
             }`}
-            title="More Actions"
+            title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can use more actions" : "More Actions"}
           >
             <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
               <path d="M12 2L9.09 8.26L2 9.27L7 14.14L5.18 21.02L12 17.77L18.82 21.02L17 14.14L22 9.27L14.91 8.26L12 2Z" />
@@ -2769,9 +3078,17 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             </svg>
           </button>
           <button
-            onClick={() => setShowCollaboratorModal(true)}
-            className="p-2 rounded text-gray-400 hover:text-white transition-colors"
-            title="Collaborators"
+            onClick={() => {
+              if (!isBookOwner) return;
+              setShowCollaboratorModal(true);
+            }}
+            disabled={!isBookOwner}
+            className={`p-2 rounded transition-colors ${
+              !isBookOwner
+                ? "text-gray-600 opacity-50 cursor-not-allowed"
+                : "text-gray-400 hover:text-white"
+            }`}
+            title={!isBookOwner ? "Only book owners can manage collaborators" : "Collaborators"}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
@@ -2836,21 +3153,29 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                   <div className="space-y-2">
                     {collaborators.map((collab) => (
                       <div key={collab.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-3 flex-1">
                           <div className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center">
                             <span className="text-blue-600 text-xs font-semibold">
                               {collab.user_name.substring(0, 2).toUpperCase()}
                             </span>
                           </div>
-                          <div>
+                          <div className="flex-1">
                             <div className="text-sm font-medium text-gray-900">{collab.user_name}</div>
                             <div className="text-xs text-gray-500">{collab.user_email}</div>
-                            <div className="text-xs text-gray-400 capitalize">{collab.role}</div>
+                            <select
+                              value={collab.role}
+                              onChange={(e) => handleUpdateCollaboratorRole(collab.id, e.target.value as "editor" | "viewer" | "commenter")}
+                              className="mt-1 text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#4ade80]"
+                            >
+                              <option value="viewer">Viewer - View only</option>
+                              <option value="commenter">Commenter - Can comment</option>
+                              <option value="editor">Editor - Can edit</option>
+                            </select>
                           </div>
                         </div>
                         <button
                           onClick={() => handleRemoveCollaborator(collab.id)}
-                          className="text-red-500 hover:text-red-700 p-1"
+                          className="text-red-500 hover:text-red-700 p-1 ml-2"
                           title="Remove collaborator"
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
