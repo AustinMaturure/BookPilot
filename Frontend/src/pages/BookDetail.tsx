@@ -165,7 +165,7 @@ export default function BookDetail() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a1a2e] mt-18">
+    <div className="min-h-screen bg-[#0a1a2e] mt-18 fixed min-w-full">
       {/* Secondary Navigation Bar */}
       <div className="bg-[#002b42] border-b border-[#002A40] px-6 py-2 fixed top-10% left-0 right-0 z-50 ">
         <div className="flex items-center justify-between">
