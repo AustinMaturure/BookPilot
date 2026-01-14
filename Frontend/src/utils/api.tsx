@@ -10,9 +10,28 @@ api.interceptors.request.use((config) => {
   const token = localStorage.getItem("auth_token");
   if (token) {
     config.headers.Authorization = `Token ${token}`;
+  } else {
+    // Log warning in development to help debug auth issues
+    if (import.meta.env.DEV) {
+      console.warn("No auth token found in localStorage for request:", config.url);
+    }
   }
   return config;
 });
+
+// Handle 401 errors - token might be expired or invalid
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Token might be expired or invalid
+      console.error("Authentication failed. Token may be expired or invalid.");
+      // Optionally clear invalid token
+      // localStorage.removeItem("auth_token");
+    }
+    return Promise.reject(error);
+  }
+);
 
 export async function emailSignup(data: { email: string; password: string }) {
   try {
@@ -132,9 +151,42 @@ export async function createOutline(data: {
   book_id?: number;
 }) {
   try {
+    // Verify token exists before making request
+    const token = localStorage.getItem("auth_token");
+    if (!token) {
+      console.error("No auth token found. User may need to log in again.");
+      return { 
+        success: false, 
+        error: "Authentication required. Please log in again.",
+        status: 401
+      };
+    }
+    
     const response = await api.post("pilot/api/create_outline/", data);
     return { success: true, status: response.status, data: response.data };
   } catch (err: unknown) {
+    if (axios.isAxiosError(err)) {
+      const status = err.response?.status;
+      const message = err.response?.data?.detail || err.response?.data?.error || err.message;
+      
+      if (status === 401) {
+        // Token expired or invalid - clear it
+        console.error("Authentication failed. Clearing token.");
+        localStorage.removeItem("auth_token");
+        return { 
+          success: false, 
+          error: "Your session has expired. Please log in again.",
+          status: 401
+        };
+      }
+      
+      return { 
+        success: false, 
+        error: message || "Failed to create outline",
+        status: status
+      };
+    }
+    
     if (err instanceof Error) {
       return { success: false, error: err.message };
     }
