@@ -192,10 +192,21 @@ export default function ChapterAssetsPanel({
           disabled={uploading}
           className="flex-1 flex items-center justify-center text-sm gap-2 px-4 py-3 border border-gray-600 rounded-lg text-white hover:bg-[#1a2a3a] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-          </svg>
-          {uploading ? "Uploading..." : "Upload"}
+          {uploading ? (
+            <>
+              <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Uploading...
+            </>
+          ) : (
+            <>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
+              Upload
+            </>
+          )}
         </button>
         <input
           ref={fileInputRef}
@@ -216,8 +227,18 @@ export default function ChapterAssetsPanel({
       </div>
 
       {/* Available Content */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+      <div className="flex-1 overflow-y-auto px-6 py-4 relative">
         <h3 className="text-white text-sm font-semibold mb-4 uppercase">Available Content</h3>
+        {uploading && (
+          <div className="absolute inset-0 bg-[#0a1a2e]/80 backdrop-blur-sm z-10 flex items-center justify-center rounded-lg">
+            <div className="flex flex-col items-center gap-3 text-white">
+              <svg className="w-8 h-8 animate-spin text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              <span className="text-sm font-medium">Uploading file...</span>
+            </div>
+          </div>
+        )}
         {loading ? (
           <div className="text-gray-400 text-center py-8">Loading...</div>
         ) : assets.length === 0 ? (
