@@ -10,11 +10,14 @@ api.interceptors.request.use((config) => {
   const token = localStorage.getItem("auth_token");
   if (token) {
     config.headers.Authorization = `Token ${token}`;
-  } else {
-    // Log warning in development to help debug auth issues
+    // Debug logging (remove in production if needed)
     if (import.meta.env.DEV) {
-      console.warn("No auth token found in localStorage for request:", config.url);
+      console.log(`[API] Adding auth token to request: ${config.url}`);
     }
+  } else {
+    // Log warning to help debug auth issues
+    console.warn(`[API] No auth token found in localStorage for request: ${config.url}`);
+    console.warn("[API] localStorage contents:", Object.keys(localStorage));
   }
   return config;
 });
@@ -24,10 +27,16 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Token might be expired or invalid
-      console.error("Authentication failed. Token may be expired or invalid.");
-      // Optionally clear invalid token
-      // localStorage.removeItem("auth_token");
+      const url = error.config?.url || 'unknown';
+      console.error(`[API] Authentication failed (401) for: ${url}`);
+      console.error(`[API] Request headers:`, error.config?.headers);
+      console.error(`[API] Response:`, error.response?.data);
+      
+      // Only clear token if it's not a login/signup endpoint (to avoid clearing during login)
+      if (!url.includes('email_login') && !url.includes('email_signup') && !url.includes('google_login')) {
+        console.warn("[API] Clearing invalid/expired token");
+        localStorage.removeItem("auth_token");
+      }
     }
     return Promise.reject(error);
   }
