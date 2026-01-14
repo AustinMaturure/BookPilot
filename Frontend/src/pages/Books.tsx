@@ -185,7 +185,11 @@ export default function Books() {
     const title = window.prompt("Book title", "New Book Project");
     if (title === null) return;
     const res = await createBook({ title });
-    if (res.success) {
+    if (res.success && res.data?.id) {
+      // Navigate to the position tab of the newly created book
+      navigate(`/book/${res.data.id}?tab=position`);
+    } else {
+      // If navigation fails, still reload books list
       await loadBooks();
     }
   };
