@@ -232,6 +232,7 @@ export default function BookDetail() {
             outline={outline}
             bookId={book.id}
             onOutlineUpdate={handleOutlineUpdate}
+            onSwitchTab={(tab) => setActiveTab(tab as Tab)}
           />
         )}
         {activeTab === "overview" && (
