@@ -708,15 +708,15 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   // Function to load changes (reusable for refresh)
   // For owners: Load changes for ALL talking points in the section
   // For collaborators: Load changes for the active talking point
-    const loadChanges = async () => {
+  const loadChanges = async () => {
     if (!bookId || !selectedSection) {
       console.log("No bookId or selectedSection, clearing changes");
       setContentChanges([]);
       return;
     }
 
-        setIsLoadingChanges(true);
-        try {
+    setIsLoadingChanges(true);
+    try {
       const talkingPoints = selectedSection.talking_points || [];
       
       if (talkingPoints.length === 0) {
@@ -744,29 +744,37 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       // Combine all changes into a single array
       const allChanges: ContentChange[] = [];
       allResults.forEach((result, index) => {
-          if (result.success && result.data) {
+        if (result.success && result.data) {
           console.log(`Loaded ${result.data.length} changes for tpId ${tpIdsToLoad[index]}`);
           allChanges.push(...result.data);
         } else {
           console.error(`Failed to load changes for tpId ${tpIdsToLoad[index]}:`, result);
-          }
+        }
       });
 
       console.log(`loadChanges - Loaded ${allChanges.length} total changes for ${tpIdsToLoad.length} talking points`);
       setContentChanges(allChanges);
-        } catch (error) {
-          console.error("Error loading changes:", error);
+    } catch (error) {
+      console.error("Error loading changes:", error);
       setContentChanges([]);
-        } finally {
-          setIsLoadingChanges(false);
-      }
-    };
+    } finally {
+      setIsLoadingChanges(false);
+    }
+  };
 
-  // Load content changes when talking point changes (no auto-polling to prevent flickering)
+  // Load content changes when section or talking point changes
   useEffect(() => {
-    loadChanges();
-    // Removed auto-polling - changes will only load when talking point changes or on manual refresh
-  }, [currentTalkingPointId, selectedSection, bookId]);
+    // Only load if we have a selected section
+    if (selectedSection && bookId) {
+      console.log("Loading changes for section:", selectedSection.id, "talking point:", currentTalkingPointId);
+      loadChanges();
+    } else {
+      // Clear changes if no section selected
+      console.log("No selected section, clearing changes");
+      setContentChanges([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedItem?.sectionId, currentTalkingPointId, bookId, isBookOwner]);
 
   // Auto-open changes tab for owners if there are pending changes (only once when changes are first loaded)
   useEffect(() => {
@@ -792,7 +800,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     setSelectionPosition(null);
     setCurrentTalkingPointId(null);
     setComments([]);
-    setContentChanges([]);
+    // Don't clear contentChanges here - let the useEffect handle it when selectedSection changes
     // FIX: Clear all captured steps when switching sections
     (window as any).__CAPTURED_STEPS_BY_TP__ = {};
     
@@ -2532,12 +2540,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           onClick={async () => {
                             const result = await deleteContentChange(change.id);
                             if (result.success) {
-                              const activeTpId = currentTalkingPointId || (selectedSection?.talking_points?.[0]?.id ?? null);
-                              if (activeTpId) {
-                                const changesResult = await getContentChanges(activeTpId);
-                                if (changesResult.success) {
-                                  setContentChanges(changesResult.data);
-                                }
+                              // Reload changes for the current section
+                              if (selectedSection && bookId) {
+                                await loadChanges();
                               }
                             }
                           }}
