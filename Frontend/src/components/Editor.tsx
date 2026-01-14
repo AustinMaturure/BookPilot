@@ -1893,7 +1893,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           <h3 className="text-sm font-semibold text-gray-400 mb-4">CONTENTS</h3>
           <hr className="border-gray-400" />
           <div className="space-y-1">
-            {outline?.chapters?.map((chapter, ci) => {
+            {outline?.chapters?.map((chapter) => {
               const chapterId = chapter.id ?? -1;
               const isExpanded = expandedChapters[chapterId] ?? false;
 
