@@ -157,7 +157,7 @@ function SortableChapter({
         {isEditing ? (
           <div className="flex-1 flex items-center gap-2">
             <input
-              className="flex-1 px-3 py-1 border border-gray-300 rounded-lg focus:outline-none focus:border-[#4ade80]"
+              className="flex-1 px-3 py-1 border border-gray-300 rounded-lg focus:outline-none focus:border-[#CDF056]"
               value={chapterTitle}
               onChange={(e) => onTitleChange(e.target.value)}
               onBlur={onTitleBlur}
@@ -166,7 +166,7 @@ function SortableChapter({
             />
           </div>
         ) : (
-          <button onClick={onEditStart} className="flex-1 text-left font-semibold text-gray-900 hover:text-[#4ade80]">
+          <button onClick={onEditStart} className="flex-1 text-left font-semibold text-gray-900 hover:text-[#CDF056]">
             {chapter.title}
           </button>
         )}
@@ -175,7 +175,7 @@ function SortableChapter({
         <div className="flex items-center gap-2">
           <button
             onClick={onAddSection}
-            className="px-3 py-1 text-sm text-gray-400 hover:bg-[#4ade80]/10 rounded-lg font-medium"
+            className="px-3 py-1 text-sm text-gray-400 hover:bg-[#CDF056]/10 rounded-lg font-medium"
           >
             + Chapter
           </button>
@@ -224,7 +224,7 @@ function SortableChapter({
           {chapterId > 0 && (
             <button
               onClick={onAddSection}
-              className="text-sm text-[#4ade80] hover:underline"
+              className="text-sm text-[#CDF056] hover:underline"
             >
               + Section
             </button>
@@ -317,14 +317,14 @@ function SortableSection({
         </button>
 
         {/* CH Badge */}
-        <span className="px-2 py-1 bg-[#4ade80]/20 text-gray-700 text-xs font-semibold rounded-full">
+        <span className="px-2 py-1 bg-[#CDF056]/20 text-gray-700 text-xs font-semibold rounded-full">
           CH {sectionIndex + 1}
         </span>
 
         {/* Section Title */}
         {isEditing ? (
           <input
-            className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:border-[#4ade80]"
+            className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:border-[#CDF056]"
             value={sectionTitle}
             onChange={(e) => onTitleChange(e.target.value)}
             onBlur={onTitleBlur}
@@ -332,7 +332,7 @@ function SortableSection({
             autoFocus
           />
         ) : (
-          <button onClick={onEditStart} className="flex-1 text-left text-sm font-medium text-gray-700 hover:text-[#4ade80]">
+          <button onClick={onEditStart} className="flex-1 text-left text-sm font-medium text-gray-700 hover:text-[#CDF056]">
             {section.title}
           </button>
         )}
@@ -341,7 +341,7 @@ function SortableSection({
         <div className="flex items-center gap-2">
           <button
             onClick={onAddTalkingPoint}
-            className="px-2 py-1 text-xs text-[#4ade80] hover:bg-[#4ade80]/10 rounded font-medium"
+            className="px-2 py-1 text-xs text-[#CDF056] hover:bg-[#CDF056]/10 rounded font-medium"
           >
             + Talking Point
           </button>
@@ -434,7 +434,7 @@ function SortableTalkingPoint({
         {/* Talking Point Text */}
         {isEditing ? (
           <input
-            className="flex-1 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-[#4ade80]"
+            className="flex-1 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-[#CDF056]"
             value={tpText}
             onChange={(e) => onTextChange(e.target.value)}
             onBlur={onTextBlur}
@@ -444,7 +444,7 @@ function SortableTalkingPoint({
         ) : (
           <>
             <span className="flex-1 text-xs text-gray-700">{tp.text}</span>
-            <button onClick={onEditStart} className="text-xs text-[#4ade80] hover:underline">
+            <button onClick={onEditStart} className="text-xs text-[#CDF056] hover:underline">
               Edit
             </button>
             {tpId > 0 && (
@@ -1112,9 +1112,9 @@ export default function OutlineView({
               {/* Add New Part Button */}
               <button
                 onClick={handleAddChapter}
-                className="w-full bg-white border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-[#4ade80] hover:bg-[#4ade80]/5 transition-colors"
+                className="w-full bg-white border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-[#CDF056] hover:bg-[#CDF056]/5 transition-colors"
               >
-                <div className="flex items-center justify-center gap-2 text-[#4ade80] font-medium">
+                <div className="flex items-center justify-center gap-2 text-[#CDF056] font-medium">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                   </svg>
@@ -1126,7 +1126,7 @@ export default function OutlineView({
 
           <DragOverlay>
             {activeItem ? (
-              <div className="bg-white rounded-xl border-2 border-[#4ade80] shadow-lg p-4 opacity-90">
+              <div className="bg-white rounded-xl border-2 border-[#CDF056] shadow-lg p-4 opacity-90">
                 <div className="font-semibold text-gray-900">{activeItem.title}</div>
               </div>
             ) : null}

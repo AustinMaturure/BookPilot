@@ -45,7 +45,7 @@ function BookCard({ book, onSelect }: BookCardProps) {
       className={`bg-[#002A40] rounded-lg p-5 border transition-all cursor-pointer relative ${
         book.is_collaboration 
           ? "border-blue-500/50 hover:border-blue-400" 
-          : "border-[#2d3a4a] hover:border-[#4ade80]/30"
+          : "border-[#2d3a4a] hover:border-[#CDF056]/30"
       }`}
       onClick={() => onSelect(book.id)}
     >

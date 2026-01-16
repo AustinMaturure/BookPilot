@@ -315,12 +315,12 @@ export default function Position({
       {/* Left Sidebar - Progress */}
       <div className="w-20 bg-[#1a2a3a] border-r border-[#2d3a4a] flex flex-col items-center py-6 justify-center mt-10">
         <div className="mb-6 flex flex-col items-center justify-center">
-          <div className="text-[#4ade80] text-xs font-semibold mb-2 text-center" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
+          <div className="text-[#CDF056] text-xs font-semibold mb-2 text-center" style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
             PROGRESS
           </div>
           <div className="relative w-4 h-64 bg-[#2d3a4a] rounded-full">
             <div 
-              className="absolute bottom-0 w-full bg-[#4ade80] rounded-full transition-all duration-300"
+              className="absolute bottom-0 w-full bg-[#CDF056] rounded-full transition-all duration-300"
               style={{ height: `${progress}%` }}
             />
           </div>
@@ -333,7 +333,7 @@ export default function Position({
             <div
               key={step}
               className={`w-3 h-3 rounded-full ${
-                step <= currentStep ? "bg-[#4ade80]" : "bg-[#2d3a4a]"
+                step <= currentStep ? "bg-[#CDF056]" : "bg-[#2d3a4a]"
               }`}
             />
           ))}
@@ -351,7 +351,7 @@ export default function Position({
               }`}
             >
               {msg.from === "AI" && (
-                <div className="shrink-0 w-10 h-10 rounded-full bg-[#4ade80] flex items-center justify-center">
+                <div className="shrink-0 w-10 h-10 rounded-full bg-[#CDF056] flex items-center justify-center">
                   <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
@@ -391,7 +391,7 @@ export default function Position({
           ))}
           {isGenerating && (
             <div className="flex items-start gap-3 justify-start">
-              <div className="shrink-0 w-10 h-10 rounded-full bg-[#4ade80] flex items-center justify-center">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-[#CDF056] flex items-center justify-center">
                 <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
@@ -411,7 +411,7 @@ export default function Position({
           )}
           {isTyping && !isGenerating && (
             <div className="flex items-start gap-3 justify-start">
-              <div className="shrink-0 w-10 h-10 rounded-full bg-[#4ade80] flex items-center justify-center">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-[#CDF056] flex items-center justify-center">
                 <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
@@ -433,7 +433,7 @@ export default function Position({
           <div className="flex items-center gap-4 max-w-4xl mx-auto">
             {/* Voice Button */}
             <button
-              className="shrink-0 w-16 h-16 rounded-full bg-[#4ade80] flex items-center justify-center shadow-lg hover:shadow-xl transition-shadow relative"
+              className="shrink-0 w-16 h-16 rounded-full bg-[#CDF056] flex items-center justify-center shadow-lg hover:shadow-xl transition-shadow relative"
               style={{
                 boxShadow: "0 0 20px rgba(74, 222, 128, 0.5)"
               }}
@@ -452,13 +452,13 @@ export default function Position({
                 onChange={(e) => setUserMessage(e.target.value)}
                 onKeyPress={handleKeyPress}
                 disabled={isGenerating}
-                className="w-full px-6 py-4 pr-12 border-2 border-gray-300 rounded-2xl focus:outline-none focus:border-[#4ade80] text-gray-900"
+                className="w-full px-6 py-4 pr-12 border-2 border-gray-300 rounded-2xl focus:outline-none focus:border-[#CDF056] text-gray-900"
                 placeholder="Or type your answer here..."
               />
               <button
                 onClick={sendMessage}
                 disabled={isGenerating || !userMessage.trim()}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#4ade80] hover:text-[#3bc96d] disabled:text-gray-400 disabled:cursor-not-allowed"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#CDF056] hover:text-[#3bc96d] disabled:text-gray-400 disabled:cursor-not-allowed"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -509,14 +509,14 @@ export default function Position({
             boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37), inset 0 1px 0 0 rgba(255, 255, 255, 0.2)'
           }}>
             <div className="flex items-center gap-2 mb-3">
-              <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <span className="text-gray-300 text-xs font-medium uppercase tracking-wide">GOAL</span>
             </div>
             <div className="text-white text-4xl font-bold mb-2">{goal}</div>
             <div className="w-full bg-white/10 rounded-full h-2 backdrop-blur-sm">
-              <div className="bg-[#4ade80] h-2 rounded-full shadow-lg" style={{ width: "20%" }} />
+              <div className="bg-[#CDF056] h-2 rounded-full shadow-lg" style={{ width: "20%" }} />
             </div>
           </div>
 
@@ -526,7 +526,7 @@ export default function Position({
             boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37), inset 0 1px 0 0 rgba(255, 255, 255, 0.2)'
           }}>
             <div className="flex items-center gap-2 mb-3">
-              <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
               </svg>
               <span className="text-gray-300 text-xs font-medium uppercase tracking-wide">CORE TOPIC</span>
@@ -540,7 +540,7 @@ export default function Position({
             boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37), inset 0 1px 0 0 rgba(255, 255, 255, 0.2)'
           }}>
             <div className="flex items-center gap-2 mb-3">
-              <svg className="w-5 h-5 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
               </svg>
               <span className="text-gray-300 text-xs font-medium uppercase tracking-wide">AUDIENCE</span>
@@ -571,7 +571,7 @@ export default function Position({
             boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37), inset 0 1px 0 0 rgba(255, 255, 255, 0.2)'
           }}>
             <div className="flex items-start gap-2">
-              <svg className="w-5 h-5 text-[#4ade80] shrink-0 mt-1" fill="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5 text-[#CDF056] shrink-0 mt-1" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M14.017 21v-7.391c0-5.704 3.731-9.57 9.064-9.57V3.055c-3.219.348-5.891 2.789-5.891 6.748v7.285h6.458V21h-9.631zm-14.017 0v-7.391c0-5.704 3.748-9.57 9.069-9.57V3.055c-3.219.348-5.89 2.789-5.89 6.748v7.285h6.453V21H0z" />
               </svg>
               <p className="text-gray-200 text-sm italic leading-relaxed">

@@ -120,7 +120,7 @@ export default function Navbar() {
                 <div className='relative'>
                     <button
                         onClick={() => setShowUserMenu(!showUserMenu)}
-                        className='w-10 h-10 rounded-full bg-[#2d4a3e] flex items-center justify-center border border-[#4ade80] hover:bg-[#3d5a4e] transition-colors'
+                        className='w-10 h-10 rounded-full bg-[#2d4a3e] flex items-center justify-center border border-[#CDF056] hover:bg-[#3d5a4e] transition-colors'
                     >
                         <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />

@@ -170,7 +170,7 @@ export default function ChapterAssetsPanel({
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-[#2d3a4a] shrink-0">
         <div className="flex items-center gap-3">
-          <svg className="w-6 h-6 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-6 h-6 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
           </svg>
           <h2 className="text-white text-sm font-semibold">Chapter Assets</h2>
@@ -232,7 +232,7 @@ export default function ChapterAssetsPanel({
         {uploading && (
           <div className="absolute inset-0 bg-[#0a1a2e]/80 backdrop-blur-sm z-10 flex items-center justify-center rounded-lg">
             <div className="flex flex-col items-center gap-3 text-white">
-              <svg className="w-8 h-8 animate-spin text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-8 h-8 animate-spin text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
               <span className="text-sm font-medium">Uploading file...</span>
@@ -254,7 +254,7 @@ export default function ChapterAssetsPanel({
                   type="checkbox"
                   checked={selectedAssetIds.has(asset.id)}
                   onChange={() => toggleAssetSelection(asset.id)}
-                  className="w-4 h-4 text-[#4ade80] bg-gray-700 border-gray-600 rounded focus:ring-[#4ade80]"
+                  className="w-4 h-4 text-[#CDF056] bg-gray-700 border-gray-600 rounded focus:ring-[#CDF056]"
                 />
                 <div className="text-gray-400 shrink-0">
                   {getFileIcon(asset.file_type)}

@@ -112,7 +112,7 @@ export default function BookChecks() {
     return (
       <div className="min-h-screen bg-[#0a1a2e] flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#4ade80] mx-auto mb-4"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#CDF056] mx-auto mb-4"></div>
           <div className="text-gray-400">Running checks...</div>
         </div>
       </div>
@@ -163,7 +163,7 @@ export default function BookChecks() {
             return (
               <div
                 key={category}
-                className="bg-[#002b42] border border-[#2d3a4a] rounded-lg p-6 cursor-pointer hover:border-[#4ade80]/50 transition-colors flex flex-col justify-between"
+                className="bg-[#002b42] border border-[#2d3a4a] rounded-lg p-6 cursor-pointer hover:border-[#CDF056]/50 transition-colors flex flex-col justify-between"
                 onClick={() => setSelectedCategory(category)}
               >
                  <div className="flex items-center justify-between mb-4">
@@ -199,7 +199,7 @@ export default function BookChecks() {
                   }`}>
                     {status === "passed" ? "No Issues Found" : `${categoryData.findings_count} Finding${categoryData.findings_count !== 1 ? 's' : ''}`}
                   </div>
-                  <div className="text-sm text-white hover:text-[#4ade80] transition-colors">
+                  <div className="text-sm text-white hover:text-[#CDF056] transition-colors">
                     View Details →
                   </div>
                 </div>

@@ -1482,13 +1482,13 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           <div className="flex items-start gap-2 mb-2">
             <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
               comment.comment_type === "ai" 
-                ? "bg-[#4ade80]/20" 
+                ? "bg-[#CDF056]/20" 
                 : comment.comment_type === "collaborator"
                 ? "bg-blue-500/20"
                 : "bg-gray-200"
             }`}>
               {comment.comment_type === "ai" ? (
-                <svg className="w-4 h-4 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
                 </svg>
               ) : (
@@ -1554,7 +1554,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               </svg>
             </button>
             {comment.suggested_replacement && (
-              <button className="w-6 h-6 rounded-full bg-[#4ade80] hover:bg-[#3bc96d] flex items-center justify-center">
+              <button className="w-6 h-6 rounded-full bg-[#CDF056] hover:bg-[#3bc96d] flex items-center justify-center">
                 <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
@@ -1569,14 +1569,14 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                 value={replyText}
                 onChange={(e) => setReplyTexts((prev) => ({ ...prev, [comment.id]: e.target.value }))}
                 placeholder="Write a reply..."
-                className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#4ade80] resize-none"
+                className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#CDF056] resize-none"
                 rows={2}
               />
               <div className="flex items-center gap-2 mt-2">
                 <button
                   onClick={() => handleAddReply(comment.id)}
                   disabled={!replyText.trim() || isAdding}
-                  className="px-3 py-1.5 bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-xs"
+                  className="px-3 py-1.5 bg-[#CDF056] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-xs"
                 >
                   {isAdding ? "Replying..." : "Reply"}
                 </button>
@@ -1962,8 +1962,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           <button
                             key={sectionId}
                             onClick={() => handleSectionClick(chapterId, sectionId, section.title)}
-                            className={`w-full text-left px-3 py-2 text-sm text-white/70 hover:bg-[#4ade80]/5  flex items-center gap-2 ${
-                              isSelected ? "bg-[#4ade80]/10 border-l-2 border-[#4ade80]" : ""
+                            className={`w-full text-left px-3 py-2 text-sm text-white/70 hover:bg-[#CDF056]/5  flex items-center gap-2 ${
+                              isSelected ? "bg-[#CDF056]/10 border-l-2 border-[#CDF056]" : ""
                             }`}
                           >
                             <span className="text-xs text-gray-500">{si + 1}</span>
@@ -2043,7 +2043,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               className={`px-3 py-1.5 text-sm rounded-lg flex items-center gap-2 ${
                                 !isBookOwner && collaboratorRole !== "editor"
                                   ? "bg-gray-300 text-gray-500 cursor-not-allowed opacity-50"
-                                  : "bg-[#4ade80] text-white hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed"
+                                  : "bg-[#CDF056] text-white hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed"
                               }`}
                               title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can generate text" : "Generate Text"}
                             >
@@ -2146,7 +2146,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                   className="px-3 py-2 text-sm text-gray-200 rounded hover:bg-[#1a2a3a] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full text-left"
                                   title="Shorten this text"
                                 >
-                                  <svg className="w-4 h-4 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <svg className="w-4 h-4 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243 4.243 3 3 0 004.243-4.243zm0-5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z" />
                                   </svg>
                                   Shorten
@@ -2157,7 +2157,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                   className="px-3 py-2 text-sm text-gray-200 rounded hover:bg-[#1a2a3a] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full text-left"
                                   title="Strengthen this text"
                                 >
-                                  <svg className="w-4 h-4 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <svg className="w-4 h-4 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                                   </svg>
                                   Strengthen
@@ -2168,7 +2168,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                   className="px-3 py-2 text-sm text-gray-200 rounded hover:bg-[#1a2a3a] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full text-left"
                                   title="Clarify this text"
                                 >
-                                  <svg className="w-4 h-4 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <svg className="w-4 h-4 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                                     <circle cx="18.5" cy="4.5" r="1" fill="currentColor" />
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18 4l1 1m0-2l-1 1" opacity="0.6" />
@@ -2188,7 +2188,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                   className="px-3 py-2 text-sm text-gray-200 rounded hover:bg-[#1a2a3a] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 w-full text-left"
                                   title="More actions"
                                 >
-                                  <svg className="w-4 h-4 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <svg className="w-4 h-4 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
                                   </svg>
                                   More Actions
@@ -2217,7 +2217,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                 }}
                                 className="px-3 py-2 text-sm text-gray-200 rounded hover:bg-[#1a2a3a] flex items-center gap-2 w-full text-left"
                               >
-                                <svg className="w-4 h-4 text-[#4ade80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg className="w-4 h-4 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                                 </svg>
                                 Add to Chat
@@ -2275,13 +2275,13 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                   value={newCommentText}
                   onChange={(e) => setNewCommentText(e.target.value)}
                   placeholder="Add a comment..."
-                  className="w-full px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#4ade80] resize-none"
+                  className="w-full px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#CDF056] resize-none"
                   rows={3}
                 />
                 <button
                   onClick={handleAddComment}
                   disabled={!newCommentText.trim() || isAddingComment}
-                  className="mt-2 px-4 py-1.5 bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                  className="mt-2 px-4 py-1.5 bg-[#CDF056] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                 >
                   {isAddingComment ? "Adding..." : "Add Comment"}
                 </button>
@@ -2585,7 +2585,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                       <div
                         className={`max-w-[80%] rounded-lg p-3 text-sm ${
                           msg.from === "user"
-                            ? "bg-[#4ade80] text-white"
+                            ? "bg-[#CDF056] text-white"
                             : "bg-white text-gray-900"
                         }`}
                       >
@@ -2630,13 +2630,13 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                       }
                     }}
                     placeholder="Ask a question about this talking point..."
-                    className="flex-1 px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#4ade80]"
+                    className="flex-1 px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#CDF056]"
                     disabled={isChatLoading}
                   />
                   <button
                     onClick={() => handleSendChatMessage(false)}
                     disabled={!chatInput.trim() || isChatLoading}
-                    className="px-4 py-2 bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-4 py-2 bg-[#CDF056] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -3010,7 +3010,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             className={`p-2 rounded transition-colors ${
               collaboratorRole === "viewer"
                 ? "text-gray-600 opacity-50 cursor-not-allowed"
-                : activeRightView === "comments" ? "bg-[#2d4a3e] text-[#4ade80]" : "text-gray-400 hover:text-white"
+                : activeRightView === "comments" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
             }`}
             title={collaboratorRole === "viewer" ? "Viewers cannot comment" : "Comments"}
           >
@@ -3027,7 +3027,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             className={`p-2 rounded transition-colors ${
               collaboratorRole === "viewer"
                 ? "text-gray-600 opacity-50 cursor-not-allowed"
-                : activeRightView === "chat" ? "bg-[#2d4a3e] text-[#4ade80]" : "text-gray-400 hover:text-white"
+                : activeRightView === "chat" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
             }`}
             title={collaboratorRole === "viewer" ? "Viewers cannot use chat" : "Chat"}
           >
@@ -3044,7 +3044,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             className={`p-2 rounded transition-colors relative ${
               !isBookOwner && collaboratorRole !== "editor"
                 ? "text-gray-600 opacity-50 cursor-not-allowed"
-                : activeRightView === "changes" ? "bg-[#2d4a3e] text-[#4ade80]" : "text-gray-400 hover:text-white"
+                : activeRightView === "changes" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
             }`}
             title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can view changes" : "Changes"}
           >
@@ -3073,7 +3073,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             className={`p-2 rounded transition-colors ${
               !isBookOwner && collaboratorRole !== "editor"
                 ? "text-gray-600 opacity-50 cursor-not-allowed"
-                : activeRightView === "moreActions" ? "bg-[#4ade80] text-white" : "text-gray-400 hover:text-white"
+                : activeRightView === "moreActions" ? "bg-[#CDF056] text-white" : "text-gray-400 hover:text-white"
             }`}
             title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can use more actions" : "More Actions"}
           >
@@ -3128,12 +3128,12 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     value={inviteEmail}
                     onChange={(e) => setInviteEmail(e.target.value)}
                     placeholder="Enter email address"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#4ade80]"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#CDF056]"
                   />
                   <select
                     value={inviteRole}
                     onChange={(e) => setInviteRole(e.target.value as "editor" | "viewer" | "commenter")}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#4ade80]"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#CDF056]"
                   >
                     <option value="commenter">Commenter - Can add comments</option>
                     <option value="editor">Editor - Can edit content</option>
@@ -3142,7 +3142,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                   <button
                     onClick={handleInviteCollaborator}
                     disabled={!inviteEmail.trim() || isInviting}
-                    className="w-full px-4 py-2 bg-[#4ade80] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                    className="w-full px-4 py-2 bg-[#CDF056] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                   >
                     {isInviting ? "Inviting..." : "Invite"}
                   </button>
@@ -3170,7 +3170,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             <select
                               value={collab.role}
                               onChange={(e) => handleUpdateCollaboratorRole(collab.id, e.target.value as "editor" | "viewer" | "commenter")}
-                              className="mt-1 text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#4ade80]"
+                              className="mt-1 text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#CDF056]"
                             >
                               <option value="viewer">Viewer - View only</option>
                               <option value="commenter">Commenter - Can comment</option>
