@@ -36,6 +36,12 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Service Account Keys (CRITICAL - Never include in Docker images!)
+*.json
+bookpilot-*.json
+*-service-account*.json
+*-90305f06f79e*.json
+
 # Docker
 Dockerfile
 .dockerignore

@@ -140,6 +140,15 @@ ENV/
 env.bak/
 venv.bak/
 
+# Google Cloud Service Account Keys (NEVER commit these!)
+bookpilot-*.json
+*-service-account*.json
+*service-account*.json
+# But allow other JSON config files
+!package.json
+!tsconfig.json
+!tsconfig.*.json
+
 # Spyder project settings
 .spyderproject
 .spyproject

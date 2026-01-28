@@ -1,7 +1,10 @@
 from django.urls import path
 from .views import (
+    health_check,
     createOutline,
     generate_followup_question,
+    validate_answer_quality,
+    generate_insight_summary,
     generate_text,
     add_user_context,
     list_books,
@@ -18,6 +21,7 @@ from .views import (
     delete_talking_point,
     upload_chapter_asset,
     list_chapter_assets,
+    delete_chapter_asset,
     ask_chat_question,
     comments_list_create,
     comment_detail,
@@ -25,16 +29,27 @@ from .views import (
     quick_text_action,
     book_collaborators,
     remove_collaborator,
+    update_collaborator_role,
     content_changes_list_create,
     content_change_detail,
     collab_receive_steps,
     collab_get_state,
     run_book_checks_endpoint,
+    infer_and_update_audience_tag,
+    # Positioning Pillars
+    pillars_list_initialize,
+    pillar_chat,
+    pillar_mark_complete,
+    pillar_reset,
+    get_positioning_brief,
 )
 
 urlpatterns = [
+    path("health/", health_check),
     path("create_outline/", createOutline),
     path("generate_followup/", generate_followup_question),
+    path("validate_answer/", validate_answer_quality),
+    path("generate_insight/", generate_insight_summary),
     path("generate_text/", generate_text),
     path("user_context/", add_user_context),
     path("books/", list_books),
@@ -51,6 +66,7 @@ urlpatterns = [
     path("talking_points/<int:tp_id>/delete/", delete_talking_point),
     path("assets/upload/", upload_chapter_asset),
     path("assets/", list_chapter_assets),
+    path("assets/<int:asset_id>/delete/", delete_chapter_asset),
     path("chat/", ask_chat_question),
     path("chat/with-changes/", chat_with_changes),
     path("quick-action/", quick_text_action),
@@ -58,9 +74,18 @@ urlpatterns = [
     path("comments/<int:comment_id>/", comment_detail),
     path("books/<int:book_id>/collaborators/", book_collaborators),
     path("books/<int:book_id>/collaborators/<int:collaborator_id>/", remove_collaborator),
+    path("books/<int:book_id>/collaborators/<int:collaborator_id>/role/", update_collaborator_role),
     path("talking_points/<int:talking_point_id>/changes/", content_changes_list_create),
     path("changes/<int:change_id>/", content_change_detail),
     path("talking_points/<int:talking_point_id>/collab/", collab_receive_steps),
     path("talking_points/<int:talking_point_id>/collab/state/", collab_get_state),
     path("books/<int:book_id>/checks/", run_book_checks_endpoint),
+    path("books/<int:book_id>/audience_tag/", infer_and_update_audience_tag),
+    
+    # Positioning Pillars API
+    path("books/<int:book_id>/pillars/", pillars_list_initialize),  # GET: list, POST: initialize
+    path("pillars/<int:pillar_id>/chat/", pillar_chat),  # GET: history, POST: send message
+    path("pillars/<int:pillar_id>/complete/", pillar_mark_complete),  # POST: mark complete
+    path("pillars/<int:pillar_id>/reset/", pillar_reset),  # POST: reset pillar
+    path("books/<int:book_id>/brief/", get_positioning_brief),  # GET: positioning brief
 ]

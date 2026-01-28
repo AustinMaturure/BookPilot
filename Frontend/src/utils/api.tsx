@@ -741,6 +741,30 @@ export async function deleteContentChange(change_id: number) {
   }
 }
 
+/**
+ * updateContentChangeStepJson - Updates the step_json of a content change
+ * Used to remap positions after another change is approved
+ */
+export async function updateContentChangeStepJson(change_id: number, step_json: any) {
+  try {
+    console.log(`[updateContentChangeStepJson] Updating change ${change_id} with:`, JSON.stringify(step_json));
+    const response = await api.patch(`pilot/api/changes/${change_id}/`, { step_json });
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: any) {
+    // Log full error details for debugging
+    console.error(`[updateContentChangeStepJson] Error updating change ${change_id}:`, err);
+    if (err.response) {
+      console.error(`[updateContentChangeStepJson] Response status:`, err.response.status);
+      console.error(`[updateContentChangeStepJson] Response data:`, err.response.data);
+      return { success: false, error: err.response.data || err.message, status: err.response.status };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
 export type BookCheckFinding = {
   book_id: number;
   chapter_id: number;
@@ -804,6 +828,182 @@ export async function getCollaborationState(talking_point_id: number) {
     const response = await api.get(`pilot/api/talking_points/${talking_point_id}/collab/state/`);
     return { success: true, status: response.status, data: response.data };
   } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+// ============================================================================
+// POSITIONING PILLARS API
+// ============================================================================
+
+export type PillarStatus = "LOCKED" | "ACTIVE" | "COMPLETE";
+
+export type PositioningPillar = {
+  id: number;
+  name: string;
+  slug: string;
+  order: number;
+  status: PillarStatus;
+  depth_score: number;
+  summary: string | null;
+  description: string;
+};
+
+export type PillarChatMessage = {
+  role: "user" | "assistant" | "system";
+  content: string;
+  state_emission: PillarStateEmission | null;
+  created_at?: string;
+};
+
+export type PillarStateEmission = {
+  current_pillar: string;
+  progress_percentage: number;
+  pillars_completed: string[];
+  depth_score?: number;
+  is_complete?: boolean;
+};
+
+export type PillarsListResponse = {
+  book_id: number;
+  progress_percentage: number;
+  pillars_completed: string[];
+  current_pillar: string | null;
+  all_pillars_complete: boolean;
+  pillars: PositioningPillar[];
+};
+
+export type PillarChatResponse = {
+  pillar_id: number;
+  pillar_name: string;
+  pillar_slug: string;
+  status: PillarStatus;
+  depth_score: number;
+  messages: PillarChatMessage[];
+  state_emission?: PillarStateEmission;
+};
+
+export type PositioningBrief = {
+  is_ready: boolean;
+  brief: string;
+  pillar_summaries: Record<string, { name: string; summary: string; depth_score: number }>;
+  generated_at: string;
+};
+
+/**
+ * Initialize and list positioning pillars for a book.
+ * POST initializes the 9 pillars (idempotent).
+ * GET returns the list of pillars with their status.
+ */
+export async function initializePillars(book_id: number) {
+  try {
+    const response = await api.post(`pilot/api/books/${book_id}/pillars/`);
+    return { success: true, status: response.status, data: response.data as PillarsListResponse };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function getPillars(book_id: number) {
+  try {
+    const response = await api.get(`pilot/api/books/${book_id}/pillars/`);
+    return { success: true, status: response.status, data: response.data as PillarsListResponse };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+/**
+ * Get chat history for a pillar.
+ */
+export async function getPillarChat(pillar_id: number) {
+  try {
+    const response = await api.get(`pilot/api/pillars/${pillar_id}/chat/`);
+    return { success: true, status: response.status, data: response.data as PillarChatResponse };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+/**
+ * Send a message to a pillar's chat and get AI response.
+ */
+export async function sendPillarMessage(pillar_id: number, message: string) {
+  try {
+    const response = await api.post(`pilot/api/pillars/${pillar_id}/chat/`, { message });
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+/**
+ * Mark a pillar as complete (with validation).
+ */
+export async function markPillarComplete(pillar_id: number) {
+  try {
+    const response = await api.post(`pilot/api/pillars/${pillar_id}/complete/`);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return { 
+        success: false, 
+        error: err.response.data?.detail || err.message,
+        data: err.response.data
+      };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+/**
+ * Reset a pillar to start over.
+ */
+export async function resetPillar(pillar_id: number) {
+  try {
+    const response = await api.post(`pilot/api/pillars/${pillar_id}/reset/`);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+/**
+ * Get the Master Positioning Brief (only available when all pillars complete).
+ */
+export async function getPositioningBrief(book_id: number) {
+  try {
+    const response = await api.get(`pilot/api/books/${book_id}/brief/`);
+    return { success: true, status: response.status, data: response.data as PositioningBrief };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return { 
+        success: false, 
+        error: err.response.data?.detail || err.message,
+        data: err.response.data
+      };
+    }
     if (err instanceof Error) {
       return { success: false, error: err.message };
     }

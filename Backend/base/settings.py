@@ -32,7 +32,10 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-ocvh4zouq(zopae)9&sj_j$vqr
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "").split() if os.getenv("ALLOWED_HOSTS") else []
+# ALLOWED_HOSTS should be space-separated domain names (no protocol, no trailing slash)
+# Example: ALLOWED_HOSTS="bookpilot.netlify.app localhost 127.0.0.1"
+allowed_hosts_str = os.getenv("ALLOWED_HOSTS", "")
+ALLOWED_HOSTS = allowed_hosts_str.split() if allowed_hosts_str else ["localhost", "127.0.0.1",  "0.0.0.0", "bookpilot-583770319956.europe-west1.run.app"]
 
 
 # Application definition
@@ -50,7 +53,44 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
 ]
-CORS_ALLOW_ALL_ORIGINS = True
+
+# Add storages if available (for Google Cloud Storage)
+try:
+    import storages
+    INSTALLED_APPS.append('storages')
+except ImportError:
+    pass
+
+# CORS Configuration
+# Allow specific origins from environment variable, or default to localhost for development
+cors_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
+# Default allowed origins (add your production frontend URL here)
+default_origins = ["http://localhost:5173", "https://bookpilot.netlify.app"]
+CORS_ALLOWED_ORIGINS = cors_origins_str.split() if cors_origins_str else default_origins
+
+# Allow credentials (cookies, authorization headers)
+CORS_ALLOW_CREDENTIALS = True
+
+# CORS headers that should be allowed
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',  # Important for Token authentication
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+# For development, you can use CORS_ALLOW_ALL_ORIGINS = True
+# For production, use CORS_ALLOWED_ORIGINS with specific domains
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    # In production, ensure Authorization header is explicitly allowed
+    print(f"[CORS] Allowed origins: {CORS_ALLOWED_ORIGINS}")
 MIDDLEWARE = [
      'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
@@ -86,12 +126,72 @@ WSGI_APPLICATION = 'base.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+CLOUD_SQL_CONNECTION_NAME = os.getenv("CLOUD_SQL_CONNECTION_NAME", "")
+# DB_NAME defaults to "bookpilot" - make sure this matches your actual Cloud SQL database name
+# NOT the instance name (bookpilot-sql), but the database name inside the instance
+DB_NAME = os.getenv("DB_NAME", "bookpilot")
+DB_USER = os.getenv("DB_USER", "bookpilot_user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DB_HOST = os.getenv("DB_HOST", "")
+DB_PORT = os.getenv("DB_PORT", "5432")
+
+FORCE_CLOUD_SQL = os.getenv("FORCE_CLOUD_SQL", "").lower() == "true"
+
+# Check if we're running in Cloud Run/App Engine (production)
+is_cloud_run = os.getenv("K_SERVICE") or os.getenv("GAE_ENV") or os.getenv("CLOUD_RUN")
+
+# Use Cloud SQL only if:
+# 1. We're in Cloud Run/App Engine AND connection name is set, OR
+# 2. DB_HOST is explicitly set (for Cloud SQL Proxy in local dev), OR
+# 3. FORCE_CLOUD_SQL is set (for testing)
+USE_CLOUD_SQL = (
+    CLOUD_SQL_CONNECTION_NAME and
+    (is_cloud_run or DB_HOST or FORCE_CLOUD_SQL)
+)
+
+if USE_CLOUD_SQL:
+    if DB_HOST:
+        db_host = DB_HOST
+        db_port = DB_PORT
+    else:
+        db_host = f"/cloudsql/{CLOUD_SQL_CONNECTION_NAME}"
+        db_port = ""
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": DB_NAME,
+            "USER": DB_USER,
+            "PASSWORD": DB_PASSWORD,
+            "HOST": db_host,
+            "PORT": db_port,
+            "CONN_MAX_AGE": 600,
+        }
     }
-}
+
+elif DB_HOST:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": DB_NAME,
+            "USER": DB_USER,
+            "PASSWORD": DB_PASSWORD,
+            "HOST": DB_HOST,
+            "PORT": DB_PORT,
+            "CONN_MAX_AGE": 600,
+        }
+    }
+
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+
+
+
 
 
 # Password validation
@@ -128,7 +228,110 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+# Media files (user uploads)
+# Use Google Cloud Storage in production, local storage in development
+USE_GCS = os.getenv("USE_GCS", "false").lower() == "true"
+
+if USE_GCS:
+    try:
+        # Google Cloud Storage configuration
+        # Use both DEFAULT_FILE_STORAGE (for older Django) and STORAGES (for Django 5.1+)
+        DEFAULT_FILE_STORAGE = 'storages.backends.gcloud.GoogleCloudStorage'
+        GS_BUCKET_NAME = os.getenv("GS_BUCKET_NAME", "bookpilot_media")
+        GS_PROJECT_ID = os.getenv("GS_PROJECT_ID", "bookpilot-483718")
+        
+        # GCS credentials - Use Application Default Credentials (ADC)
+        # In Cloud Run, this automatically uses the service account assigned to the Cloud Run service
+        # For local development, set GOOGLE_APPLICATION_CREDENTIALS to point to a service account key file
+        GS_CREDENTIALS = None
+        
+        # Check if we're running in Cloud Run/App Engine (production)
+        is_cloud_run = os.getenv("K_SERVICE") or os.getenv("GAE_ENV") or os.getenv("CLOUD_RUN")
+        
+        # In Cloud Run, unset GOOGLE_APPLICATION_CREDENTIALS if it points to a non-existent file
+        # This prevents Google auth from trying to load a file that doesn't exist
+        if is_cloud_run:
+            creds_env = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            if creds_env:
+                # Check if it's a file path (not a full GCS path or other)
+                if not creds_env.startswith("gs://") and not os.path.exists(creds_env):
+                    # Unset it temporarily so default() uses service account
+                    print(f"WARNING: GOOGLE_APPLICATION_CREDENTIALS points to non-existent file: {creds_env}")
+                    print("WARNING: Unsetting it to use Cloud Run service account instead.")
+                    print("WARNING: Remove GOOGLE_APPLICATION_CREDENTIALS from Cloud Run environment variables.")
+                    os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+        
+        # Try default credentials first (Cloud Run, App Engine, GCE)
+        # This is the recommended approach for Cloud Run - no key files needed
+        try:
+            from google.auth import default
+            GS_CREDENTIALS, project = default()
+            if is_cloud_run:
+                print(f"✓ Using Application Default Credentials (Cloud Run service account) for project: {project}")
+            else:
+                print(f"✓ Using Application Default Credentials for project: {project}")
+        except Exception as e:
+            # Only try explicit credentials path if we're NOT in Cloud Run (local development)
+            if not is_cloud_run:
+                credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+                
+                if credentials_path:
+                    # Handle relative paths (relative to BASE_DIR/Backend where manage.py is)
+                    if not os.path.isabs(credentials_path):
+                        credentials_path = os.path.join(BASE_DIR, credentials_path)
+                    
+                    if os.path.exists(credentials_path):
+                        try:
+                            from google.oauth2 import service_account
+                            GS_CREDENTIALS = service_account.Credentials.from_service_account_file(credentials_path)
+                            print(f"✓ Using service account key file: {credentials_path}")
+                        except ImportError:
+                            print("WARNING: google-cloud-storage not installed. Install with: pip install google-cloud-storage django-storages")
+                        except Exception as key_error:
+                            print(f"WARNING: Error loading service account credentials: {key_error}")
+                    else:
+                        print(f"WARNING: Credentials file not found: {credentials_path}")
+                        print("WARNING: GCS operations may fail. Set GOOGLE_APPLICATION_CREDENTIALS or ensure default credentials are available.")
+                else:
+                    print("WARNING: No credentials found. GCS operations may fail.")
+            else:
+                # In Cloud Run, default credentials should always work
+                print(f"ERROR: Failed to get default credentials in Cloud Run: {e}")
+                print("ERROR: Ensure Cloud Run service account has Storage Object Admin role.")
+                print("ERROR: Do NOT set GOOGLE_APPLICATION_CREDENTIALS in Cloud Run - use service account instead.")
+        
+        # GCS settings
+        # Note: With uniform bucket-level access, ACLs are not used.
+        # Public access is controlled via IAM policies only.
+        GS_DEFAULT_ACL = None  # Not used with uniform bucket-level access
+        GS_FILE_OVERWRITE = False  # Don't overwrite existing files
+        GS_QUERYSTRING_AUTH = False  # Don't use query string authentication (use IAM for public access)
+        GS_CUSTOM_ENDPOINT = None  # Use default GCS endpoint
+        
+        # Media URL will be the GCS bucket URL
+        MEDIA_URL = f'https://storage.googleapis.com/{GS_BUCKET_NAME}/'
+        
+        # Django 5.1+ uses STORAGES dict instead of DEFAULT_FILE_STORAGE
+        STORAGES = {
+            "default": {
+                "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
+            },
+            "staticfiles": {
+                "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+            },
+        }
+    except ImportError:
+        print("WARNING: django-storages not installed. Falling back to local storage.")
+        print("Install with: pip install django-storages google-cloud-storage")
+        USE_GCS = False
+
+if not USE_GCS:
+    # Local development storage
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field

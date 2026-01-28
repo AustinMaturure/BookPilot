@@ -1,18 +1,22 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
+import { Extension } from "@tiptap/core";
+import { Plugin, PluginKey } from "prosemirror-state";
+import { Node as PMNode } from "prosemirror-model";
+import { DecorationSet, Decoration } from "prosemirror-view";
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import Highlight from "@tiptap/extension-highlight";
 import type { BookOutline } from "./position";
-import { updateTalkingPoint, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, getCollaborationState, createTalkingPoint, createSection, type CommentType, type Collaborator, type ContentChange } from "../utils/api";
+import { updateTalkingPoint, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, updateContentChangeStepJson, getCollaborationState, createTalkingPoint, createSection, type CommentType, type Collaborator, type ContentChange } from "../utils/api";
 import ChapterAssetsModal from "./ChapterAssetsModal";
 import ChapterAssetsPanel from "./ChapterAssetsPanel";
-import { ChangeTrackingExtension } from "./ChangeTrackingExtension";
 import { CollaborationExtension } from "./CollaborationExtension";
 import { StepCaptureExtension } from "./StepCaptureExtension";
-import { Step } from "prosemirror-transform";
+import { Mapping, Step } from "prosemirror-transform";
+import { parseSteps, getPreviewFragments, findTextRangeInDoc } from "../utils/stepUtils";
 import card2 from "../assets/Branding/Card2.png"
 import "./Editor.css";
 
@@ -79,21 +83,599 @@ type TiptapEditorProps = {
   pendingChanges?: ContentChange[];
   talkingPointId?: number;
   enableCollaboration?: boolean;
+  previewStepJson?: any[] | any | null;
+  canonicalContent?: string;
+  shadowSuggestions?: Array<{ id: number; step_json: any[] | any }>;
+  pendingHighlightStepJsons?: any[];
 };
 
-function TiptapEditor({ content, onUpdate, onBlur, placeholder, onTextSelect, editorRef, isCollaborator = false, hasChanges = false, pendingChanges = [], talkingPointId, enableCollaboration = false, isReadOnly = false }: TiptapEditorProps & { isReadOnly?: boolean }) {
+const pendingStepPreviewKey = new PluginKey("pendingStepPreview");
+const pendingShadowHighlightKey = new PluginKey("pendingShadowHighlight");
+
+const extractInsertedTextFromRawStep = (rawStep: any): string => {
+  if (!rawStep) return "";
+  if (typeof rawStep.insertedText === "string") return rawStep.insertedText;
+  const extract = (node: any): string => {
+    if (!node) return "";
+    if (node.type === "text" && node.text) return node.text;
+    if (Array.isArray(node.content)) return node.content.map(extract).join("");
+    return "";
+  };
+  const content = rawStep?.slice?.content;
+  if (Array.isArray(content)) return content.map(extract).join("");
+  return "";
+};
+
+const mapStepPositionsToBase = (
+  schema: any,
+  rawStep: any,
+  mapping: Mapping
+): { from: number | null; to: number | null } => {
+  const from = typeof rawStep?.from === "number" ? rawStep.from : null;
+  const to = typeof rawStep?.to === "number" ? rawStep.to : null;
+  if (from === null || to === null) return { from, to };
+
+  try {
+    const step = Step.fromJSON(schema, rawStep);
+    const inverse = mapping.invert();
+    const baseFrom = inverse.map(from, -1);
+    const baseTo = inverse.map(to, 1);
+    mapping.appendMap(step.getMap());
+    return { from: baseFrom, to: baseTo };
+  } catch (e) {
+    // Fallback to raw positions if step parsing fails
+    return { from, to };
+  }
+};
+
+
+const PendingShadowHighlightExtension = Extension.create({
+  name: "pendingShadowHighlight",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: pendingShadowHighlightKey,
+        state: {
+          init() {
+            return {
+              stepJsonBatches: [] as any[][],
+              // Track positions that get mapped through edits
+              // Each tracked change is either a deletion OR an insertion (split for independent mapping)
+              trackedChanges: [] as Array<{
+                type: "deletion" | "insertion";
+                text: string;
+                trackedFrom: number;
+                trackedTo: number;
+              }>,
+              decorations: DecorationSet.empty,
+            };
+          },
+          apply(tr, prev) {
+            const meta = tr.getMeta(pendingShadowHighlightKey);
+            
+            // New meta received - initialize tracking
+            // IMPORTANT: Split deletions and insertions into SEPARATE tracked entries
+            // so they can map independently through document changes
+            if (meta !== undefined) {
+              const batches = Array.isArray(meta) ? meta : [];
+              const docSize = tr.doc.content.size;
+              const decorations: Decoration[] = [];
+              // Each tracked change is now either a deletion OR an insertion, not both
+              const trackedChanges: Array<{
+                type: "deletion" | "insertion";
+                text: string;
+                trackedFrom: number;
+                trackedTo: number;
+              }> = [];
+              
+              console.log(`[PendingShadowHighlight] Received new meta with ${batches.length} batches, docSize=${docSize}`);
+              
+              batches.forEach((batch: any[], batchIdx: number) => {
+                const batchMapping = new Mapping();
+                (batch || []).forEach((rawStep: any, stepIdx: number) => {
+                  if (!rawStep || typeof rawStep !== "object") return;
+                  
+                  const mappedPos = mapStepPositionsToBase(tr.doc.type.schema, rawStep, batchMapping);
+                  const from = mappedPos.from;
+                  const to = mappedPos.to;
+                  const deletedText = rawStep.deletedText || null;
+                  const insertedText = extractInsertedTextFromRawStep(rawStep) || null;
+                  
+                  let baseFrom = typeof from === "number" ? from : 1;
+                  let baseTo = typeof to === "number" ? to : baseFrom;
+                  
+                  console.log(`[PendingShadowHighlight] Batch ${batchIdx} Step ${stepIdx}: from=${from}, to=${to}, deletedText="${(deletedText || '').substring(0, 30)}...", insertedText="${(insertedText || '').substring(0, 30)}..."`);
+                  
+                  // Handle deletion as a SEPARATE tracked change
+                  if (deletedText && typeof deletedText === "string") {
+                    const safeFrom = Math.max(0, Math.min(baseFrom, docSize));
+                    const safeTo = Math.max(0, Math.min(baseTo, docSize));
+                    console.log(`[PendingShadowHighlight] Deletion check: baseFrom=${baseFrom}, baseTo=${baseTo}, safeFrom=${safeFrom}, safeTo=${safeTo}, docSize=${docSize}`);
+                    if (safeFrom < safeTo) {
+                      console.log(`[PendingShadowHighlight] Creating deletion decoration at ${safeFrom}-${safeTo}`);
+                      decorations.push(
+                        Decoration.inline(safeFrom, safeTo, {
+                          class: "collaborator-pending-deletion",
+                        })
+                      );
+                      trackedChanges.push({
+                        type: "deletion",
+                        text: deletedText,
+                        trackedFrom: safeFrom,
+                        trackedTo: safeTo,
+                      });
+                      baseTo = safeTo;
+                    } else {
+                      console.log(`[PendingShadowHighlight] Deletion SKIPPED: safeFrom=${safeFrom} >= safeTo=${safeTo}`);
+                    }
+                  }
+                  
+                  // Handle insertion as a SEPARATE tracked change
+                  if (insertedText && typeof insertedText === "string") {
+                    // For replacements (deletion + insertion), position widget AFTER the deletion
+                    // so it visually appears after the strikethrough text
+                    // For pure insertions (no deletion), position at the insertion point
+                    const isReplacement = deletedText && typeof deletedText === "string";
+                    const insertPos = isReplacement ? baseTo : baseFrom;
+                    const clampedPos = Math.max(1, Math.min(insertPos, docSize));
+                    
+                    console.log(`[PendingShadowHighlight] Creating insertion widget at ${clampedPos}`);
+                    decorations.push(
+                      Decoration.widget(
+                        clampedPos,
+                        () => {
+                          const span = document.createElement("span");
+                          span.className = "collaborator-pending-insertion";
+                          span.textContent = insertedText;
+                          span.setAttribute("contenteditable", "false");
+                          return span;
+                        },
+                        { side: 1 }
+                      )
+                    );
+                    // Track insertion SEPARATELY (position is a single point)
+                    trackedChanges.push({
+                      type: "insertion",
+                      text: insertedText,
+                      trackedFrom: clampedPos,
+                      trackedTo: clampedPos,
+                    });
+                  }
+                });
+              });
+              
+              console.log(`[PendingShadowHighlight] Created ${decorations.length} decorations, tracking ${trackedChanges.length} changes`);
+              
+              return {
+                stepJsonBatches: batches,
+                trackedChanges,
+                decorations: DecorationSet.create(tr.doc, decorations),
+              };
+            }
+            
+            // Document changed - rebuild from trackedChanges (split deletion/insertion)
+            if (tr.docChanged && prev.trackedChanges && prev.trackedChanges.length > 0) {
+              const docSize = tr.doc.content.size;
+              const decorations: Decoration[] = [];
+              const updatedTrackedChanges: typeof prev.trackedChanges = [];
+              
+              // IMPORTANT: Detect full document replacement (e.g., setContent)
+              if (prev.trackedChanges.length > 0) {
+                const testFrom = prev.trackedChanges[0]?.trackedFrom || 0;
+                const testTo = prev.trackedChanges[0]?.trackedTo || 0;
+                const mappedTestFrom = tr.mapping.map(testFrom, -1);
+                const mappedTestTo = tr.mapping.map(testTo, 1);
+                
+                if (mappedTestFrom === 0 && mappedTestTo >= docSize - 1) {
+                  console.log(`[PendingShadowHighlight] Full document replacement detected, skipping mapping`);
+                  return {
+                    stepJsonBatches: prev.stepJsonBatches,
+                    trackedChanges: [],
+                    decorations: DecorationSet.empty,
+                  };
+                }
+              }
+              
+              console.log(`[PendingShadowHighlight] docChanged - mapping ${prev.trackedChanges.length} tracked changes`);
+              
+              prev.trackedChanges.forEach((change: any, idx: number) => {
+                const { type, text, trackedFrom, trackedTo } = change;
+                
+                // Map the tracked position through the transaction
+                // Use assoc=-1 for 'from' (stay left of insertions at this point)
+                // Use assoc=1 for 'to' (stay right of insertions at this point)
+                const mappedFrom = tr.mapping.map(trackedFrom, -1);
+                const mappedTo = tr.mapping.map(trackedTo, 1);
+                
+                console.log(`[PendingShadowHighlight] Change ${idx} (${type}): ${trackedFrom}-${trackedTo} -> ${mappedFrom}-${mappedTo}`);
+                
+                if (type === "deletion") {
+                  const safeFrom = Math.max(0, Math.min(mappedFrom, docSize));
+                  const safeTo = Math.max(0, Math.min(mappedTo, docSize));
+                  
+                  // Verify text at mapped position still matches
+                  let textAtPos = "";
+                  try {
+                    if (safeFrom < safeTo && safeTo <= docSize) {
+                      textAtPos = tr.doc.textBetween(safeFrom, safeTo, "");
+                    }
+                  } catch (e) {
+                    // Ignore
+                  }
+                  
+                  const textMatches = textAtPos === text;
+                  console.log(`[PendingShadowHighlight] Deletion ${idx}: text at ${safeFrom}-${safeTo}="${textAtPos.substring(0, 20)}...", expected="${text.substring(0, 20)}...", matches=${textMatches}`);
+                  
+                  if (safeFrom < safeTo && textMatches) {
+                    decorations.push(
+                      Decoration.inline(safeFrom, safeTo, {
+                        class: "collaborator-pending-deletion",
+                      })
+                    );
+                  } else if (safeFrom < safeTo) {
+                    // Text doesn't match - try to find it using text search
+                    const foundRange = findTextRangeInDoc(tr.doc as any, text, safeFrom);
+                    if (foundRange) {
+                      console.log(`[PendingShadowHighlight] Deletion ${idx}: found via text search at ${foundRange.from}-${foundRange.to}`);
+                      decorations.push(
+                        Decoration.inline(foundRange.from, Math.min(foundRange.to, docSize), {
+                          class: "collaborator-pending-deletion",
+                        })
+                      );
+                      // Update tracked position to found location
+                      updatedTrackedChanges.push({
+                        type: "deletion",
+                        text,
+                        trackedFrom: foundRange.from,
+                        trackedTo: foundRange.to,
+                      });
+                      return; // Skip the default push below
+                    } else {
+                      console.log(`[PendingShadowHighlight] Deletion ${idx}: text not found, using mapped position anyway`);
+                      decorations.push(
+                        Decoration.inline(safeFrom, safeTo, {
+                          class: "collaborator-pending-deletion",
+                        })
+                      );
+                    }
+                  }
+                  
+                  updatedTrackedChanges.push({
+                    type: "deletion",
+                    text,
+                    trackedFrom: mappedFrom,
+                    trackedTo: mappedTo,
+                  });
+                } else if (type === "insertion") {
+                  // For insertions, map with right association to stay after insertions at this point
+                  const insertPos = Math.max(1, Math.min(tr.mapping.map(trackedFrom, 1), docSize));
+                  console.log(`[PendingShadowHighlight] Insertion ${idx}: ${trackedFrom} -> ${insertPos}`);
+                  
+                  decorations.push(
+                    Decoration.widget(
+                      insertPos,
+                      () => {
+                        const span = document.createElement("span");
+                        span.className = "collaborator-pending-insertion";
+                        span.textContent = text;
+                        span.setAttribute("contenteditable", "false");
+                        return span;
+                      },
+                      { side: 1 }
+                    )
+                  );
+                  
+                  updatedTrackedChanges.push({
+                    type: "insertion",
+                    text,
+                    trackedFrom: insertPos,
+                    trackedTo: insertPos, // Single point
+                  });
+                }
+              });
+              
+              return {
+                stepJsonBatches: prev.stepJsonBatches,
+                trackedChanges: updatedTrackedChanges,
+                decorations: DecorationSet.create(tr.doc, decorations),
+              };
+            }
+            
+            // Non-editing transaction - keep state as-is
+            return prev;
+          },
+        },
+        props: {
+          decorations(state) {
+            return this.getState(state)?.decorations;
+          },
+        },
+      }),
+    ];
+  },
+});
+
+const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }>({
+  name: "pendingStepPreview",
+  addOptions() {
+    return {
+      previewEnabled: true,
+    };
+  },
+  addProseMirrorPlugins() {
+    const previewEnabled = this.options.previewEnabled;
+    return [
+      new Plugin({
+        key: pendingStepPreviewKey,
+        state: {
+          init() {
+            return {
+              stepJson: null as any[] | any | null,
+              // Split deletions and insertions for independent mapping
+              trackedChanges: [] as Array<{
+                type: "deletion" | "insertion";
+                text: string;
+                trackedFrom: number;
+                trackedTo: number;
+              }>,
+              decorations: DecorationSet.empty,
+            };
+          },
+          apply(tr, prev) {
+            const meta = tr.getMeta(pendingStepPreviewKey);
+            if (meta !== undefined) {
+              if (!previewEnabled) {
+                if (meta) {
+                  console.warn("[PendingStepPreview] Collaborator preview ignored.");
+                }
+                return {
+                  stepJson: null,
+                  trackedChanges: [],
+                  decorations: DecorationSet.empty,
+                };
+              }
+              
+              const docSize = tr.doc.content.size;
+              const decorations: Decoration[] = [];
+              const trackedChanges: Array<{
+                type: "deletion" | "insertion";
+                text: string;
+                trackedFrom: number;
+                trackedTo: number;
+              }> = [];
+              
+              const rawSteps = Array.isArray(meta) ? meta : [];
+              const batchMapping = new Mapping();
+              rawSteps.forEach((rawStep: any) => {
+                if (!rawStep || typeof rawStep !== "object") return;
+                
+                const mappedPos = mapStepPositionsToBase(tr.doc.type.schema, rawStep, batchMapping);
+                const from = mappedPos.from;
+                const to = mappedPos.to;
+                const deletedText = rawStep.deletedText || null;
+                const insertedText = extractInsertedTextFromRawStep(rawStep) || null;
+                
+                let baseFrom = typeof from === "number" ? from : 1;
+                let baseTo = typeof to === "number" ? to : baseFrom;
+                
+                // Handle deletion as SEPARATE tracked change
+                if (deletedText && typeof deletedText === "string") {
+                  const safeFrom = Math.max(0, Math.min(baseFrom, docSize));
+                  const safeTo = Math.max(0, Math.min(baseTo, docSize));
+                  if (safeFrom < safeTo) {
+                    decorations.push(
+                      Decoration.inline(safeFrom, safeTo, {
+                        class: "owner-pending-deletion",
+                      })
+                    );
+                    trackedChanges.push({
+                      type: "deletion",
+                      text: deletedText,
+                      trackedFrom: safeFrom,
+                      trackedTo: safeTo,
+                    });
+                    baseTo = safeTo;
+                  }
+                }
+                
+                // Handle insertion as SEPARATE tracked change
+                if (insertedText && typeof insertedText === "string") {
+                  // For replacements, position widget AFTER the deletion
+                  const isReplacement = deletedText && typeof deletedText === "string";
+                  const insertPos = isReplacement ? baseTo : baseFrom;
+                  const clampedPos = Math.max(1, Math.min(insertPos, docSize));
+                  decorations.push(
+                    Decoration.widget(
+                      clampedPos,
+                      () => {
+                        const span = document.createElement("span");
+                        span.className = "owner-pending-insertion";
+                        span.textContent = insertedText;
+                        span.setAttribute("contenteditable", "false");
+                        return span;
+                      },
+                      { side: 1 }
+                    )
+                  );
+                  trackedChanges.push({
+                    type: "insertion",
+                    text: insertedText,
+                    trackedFrom: clampedPos,
+                    trackedTo: clampedPos,
+                  });
+                }
+              });
+              
+              return {
+                stepJson: meta,
+                trackedChanges,
+                decorations: DecorationSet.create(tr.doc, decorations),
+              };
+            }
+            
+            // Document changed - rebuild from trackedChanges (split deletion/insertion)
+            if (tr.docChanged && prev.trackedChanges && prev.trackedChanges.length > 0) {
+              const docSize = tr.doc.content.size;
+              const decorations: Decoration[] = [];
+              const updatedTrackedChanges: typeof prev.trackedChanges = [];
+              
+              // Detect full document replacement
+              if (prev.trackedChanges.length > 0) {
+                const testFrom = prev.trackedChanges[0]?.trackedFrom || 0;
+                const testTo = prev.trackedChanges[0]?.trackedTo || 0;
+                const mappedTestFrom = tr.mapping.map(testFrom, -1);
+                const mappedTestTo = tr.mapping.map(testTo, 1);
+                
+                if (mappedTestFrom === 0 && mappedTestTo >= docSize - 1) {
+                  return {
+                    stepJson: prev.stepJson,
+                    trackedChanges: [],
+                    decorations: DecorationSet.empty,
+                  };
+                }
+              }
+              
+              prev.trackedChanges.forEach((change: any) => {
+                const { type, text, trackedFrom, trackedTo } = change;
+                
+                const mappedFrom = tr.mapping.map(trackedFrom, -1);
+                const mappedTo = tr.mapping.map(trackedTo, 1);
+                
+                if (type === "deletion") {
+                  const safeFrom = Math.max(0, Math.min(mappedFrom, docSize));
+                  const safeTo = Math.max(0, Math.min(mappedTo, docSize));
+                  
+                  // Verify text at mapped position still matches
+                  let textAtPos = "";
+                  try {
+                    if (safeFrom < safeTo && safeTo <= docSize) {
+                      textAtPos = tr.doc.textBetween(safeFrom, safeTo, "");
+                    }
+                  } catch (e) {
+                    // Ignore
+                  }
+                  
+                  const textMatches = textAtPos === text;
+                  
+                  if (safeFrom < safeTo && textMatches) {
+                    decorations.push(
+                      Decoration.inline(safeFrom, safeTo, {
+                        class: "owner-pending-deletion",
+                      })
+                    );
+                  } else if (safeFrom < safeTo) {
+                    // Text doesn't match - try to find it using text search
+                    const foundRange = findTextRangeInDoc(tr.doc as any, text, safeFrom);
+                    if (foundRange) {
+                      decorations.push(
+                        Decoration.inline(foundRange.from, Math.min(foundRange.to, docSize), {
+                          class: "owner-pending-deletion",
+                        })
+                      );
+                      updatedTrackedChanges.push({
+                        type: "deletion",
+                        text,
+                        trackedFrom: foundRange.from,
+                        trackedTo: foundRange.to,
+                      });
+                      return; // Skip the default push below
+                    } else {
+                      decorations.push(
+                        Decoration.inline(safeFrom, safeTo, {
+                          class: "owner-pending-deletion",
+                        })
+                      );
+                    }
+                  }
+                  
+                  updatedTrackedChanges.push({
+                    type: "deletion",
+                    text,
+                    trackedFrom: mappedFrom,
+                    trackedTo: mappedTo,
+                  });
+                } else if (type === "insertion") {
+                  const insertPos = Math.max(1, Math.min(tr.mapping.map(trackedFrom, 1), docSize));
+                  decorations.push(
+                    Decoration.widget(
+                      insertPos,
+                      () => {
+                        const span = document.createElement("span");
+                        span.className = "owner-pending-insertion";
+                        span.textContent = text;
+                        span.setAttribute("contenteditable", "false");
+                        return span;
+                      },
+                      { side: 1 }
+                    )
+                  );
+                  
+                  updatedTrackedChanges.push({
+                    type: "insertion",
+                    text,
+                    trackedFrom: insertPos,
+                    trackedTo: insertPos,
+                  });
+                }
+              });
+              
+              return {
+                stepJson: prev.stepJson,
+                trackedChanges: updatedTrackedChanges,
+                decorations: DecorationSet.create(tr.doc, decorations),
+              };
+            }
+            
+            // Non-editing transaction - keep state as-is
+            return prev;
+          },
+        },
+        props: {
+          decorations(state) {
+            return this.getState(state)?.decorations;
+          },
+        },
+      }),
+    ];
+  },
+});
+
+function TiptapEditor({
+  content,
+  onUpdate,
+  onBlur,
+  placeholder,
+  onTextSelect,
+  editorRef,
+  isCollaborator = false,
+  hasChanges = false,
+  pendingChanges = [],
+  talkingPointId,
+  enableCollaboration = false,
+  isReadOnly = false,
+  hasPendingChanges = false,
+  onPendingChangeClick,
+  previewStepJson = null,
+  canonicalContent: _canonicalContent,
+  shadowSuggestions: _shadowSuggestions = [],
+  pendingHighlightStepJsons = [],
+}: TiptapEditorProps & { isReadOnly?: boolean; hasPendingChanges?: boolean; onPendingChangeClick?: () => void }) {
   const isUpdatingRef = useRef(false);
   const isInitialMountRef = useRef(true);
-  const isProgrammaticUpdateRef = useRef(false); // Track programmatic content updates
+  const isEditingRef = useRef(false); // Track if user is actively editing
   const [collabVersion, setCollabVersion] = useState<number>(0);
+  
+  // Suppress unused variable warnings (these props are received but no longer used after removing shadow-apply)
+  void _canonicalContent;
+  void _shadowSuggestions;
   const [collabInitialized, setCollabInitialized] = useState(false);
   
   // Strip change indicators from content before processing
   const stripChangeIndicators = (html: string): string => {
     if (!html) return html;
-    const tempDiv = document.createElement("div");
-    tempDiv.innerHTML = html;
-    const changeSpans = tempDiv.querySelectorAll('[data-change-type]');
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const changeSpans = doc.querySelectorAll('[data-change-type]');
     changeSpans.forEach((span) => {
       const parent = span.parentNode;
       if (parent) {
@@ -103,7 +685,9 @@ function TiptapEditor({ content, onUpdate, onBlur, placeholder, onTextSelect, ed
         parent.removeChild(span);
       }
     });
-    return tempDiv.innerHTML;
+    const serializer = new XMLSerializer();
+    const bodyHtml = serializer.serializeToString(doc.body);
+    return bodyHtml.replace(/^<body[^>]*>/, "").replace(/<\/body>$/, "");
   };
 
 
@@ -150,20 +734,12 @@ function TiptapEditor({ content, onUpdate, onBlur, placeholder, onTextSelect, ed
       }),
     ];
 
-    // Use collaboration extension if enabled, otherwise use change tracking
+    // Use collaboration extension if enabled
     if (enableCollaboration && collabInitialized && talkingPointId) {
       baseExtensions.push(
         CollaborationExtension.configure({
           talkingPointId: talkingPointId,
           version: collabVersion,
-        })
-      );
-    } else {
-      // Note: ChangeTrackingExtension expects legacy fields, but step-native system uses step_json
-      // For now, pass empty array - step-native suggestions are handled via decorations separately
-      baseExtensions.push(
-      ChangeTrackingExtension.configure({
-        pendingChanges: [] as any, // Legacy extension - not used for step-native suggestions
         })
       );
     }
@@ -176,8 +752,13 @@ function TiptapEditor({ content, onUpdate, onBlur, placeholder, onTextSelect, ed
       }));
     }
 
+    baseExtensions.push(PendingShadowHighlightExtension);
+    baseExtensions.push(PendingStepPreviewExtension.configure({
+      previewEnabled: !isCollaborator,
+    }));
+
     return baseExtensions;
-  }, [enableCollaboration, collabInitialized, talkingPointId, collabVersion, pendingChanges, isCollaborator, hasChanges, placeholder]);
+  }, [enableCollaboration, collabInitialized, talkingPointId, collabVersion, pendingChanges, isCollaborator, hasChanges, placeholder, previewStepJson]);
 
   const editor = useEditor({
     editable: !isReadOnly,
@@ -252,133 +833,84 @@ function TiptapEditor({ content, onUpdate, onBlur, placeholder, onTextSelect, ed
     }
   }, [editor, editorRef]);
 
-  // Update the extension when pending changes change
+  // Legacy ChangeTrackingExtension removed; suggestions handled by step decorations only
+
+
+  // Initial mount only: hydrate editor from canonical content
+  useEffect(() => {
+    if (!editor) return;
+    if (!isInitialMountRef.current) return;
+    const cleanContent = stripChangeIndicators(content);
+    (editor as any).__isProgrammaticUpdate = true;
+    editor.commands.setContent(cleanContent);
+    setTimeout(() => {
+      (editor as any).__isProgrammaticUpdate = false;
+    }, 100);
+    isInitialMountRef.current = false;
+  }, [editor, content]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const extension = editor.extensionManager.extensions.find((ext: any) => ext.name === "pendingStepPreview");
+    if (extension) {
+      const tr = editor.state.tr.setMeta(pendingStepPreviewKey, previewStepJson);
+      editor.view.dispatch(tr);
+    }
+  }, [editor, previewStepJson]);
+
+
+  // Only dispatch decorations when data actually changes from the backend
+  // Use a ref to track the previous value and avoid re-dispatching during editing
+  const prevPendingHighlightRef = useRef<string>("");
   useEffect(() => {
     if (!editor) return;
     
-    // Update the extension options with new pending changes
-    const extension = editor.extensionManager.extensions.find((ext: any) => ext.name === "changeTracking");
-    if (extension) {
-      extension.options.pendingChanges = pendingChanges || [];
-      // Force a transaction to update decorations
-      // Use requestAnimationFrame to ensure DOM is ready
-      requestAnimationFrame(() => {
-      const tr = editor.state.tr;
-      editor.view.dispatch(tr);
-      });
+    // Serialize to compare if data actually changed
+    const currentSerialized = JSON.stringify(pendingHighlightStepJsons || []);
+    if (currentSerialized === prevPendingHighlightRef.current) {
+      return; // No change, skip dispatch
     }
+    prevPendingHighlightRef.current = currentSerialized;
+    
+    // Reset editing state when new data comes in
+    isEditingRef.current = false;
+    
+    const extension = editor.extensionManager.extensions.find((ext: any) => ext.name === "pendingShadowHighlight");
+    if (extension) {
+      const tr = editor.state.tr.setMeta(pendingShadowHighlightKey, pendingHighlightStepJsons || []);
+      editor.view.dispatch(tr);
+    }
+  }, [editor, pendingHighlightStepJsons]);
+
+  // Refresh preview decorations when pending changes update (owner view)
+  const prevPreviewStepJsonRef = useRef<string>("");
+  useEffect(() => {
+    if (!editor) return;
+    
+    // Serialize to compare if data actually changed
+    const currentSerialized = JSON.stringify(previewStepJson || null);
+    if (currentSerialized === prevPreviewStepJsonRef.current) {
+      return; // No change, skip dispatch
+    }
+    prevPreviewStepJsonRef.current = currentSerialized;
+    
+    const tr = editor.state.tr.setMeta(pendingStepPreviewKey, previewStepJson);
+    editor.view.dispatch(tr);
+  }, [editor, pendingChanges, previewStepJson]);
+
+  // Refresh decorations when pending changes update
+  useEffect(() => {
+    if (!editor) return;
+    const tr = editor.state.tr.setMeta("collaborationRefresh", Date.now());
+    editor.view.dispatch(tr);
   }, [editor, pendingChanges]);
 
 
-  // Track the last content we set to prevent infinite loops
-  const lastContentRef = useRef<string>("");
-  const lastPendingChangesCountRef = useRef<number>(0);
-
-  // Separate effect for content updates to avoid conflicts
-  // CRITICAL: NEVER call setContent() after initial mount - it causes text to disappear
-  // Only update decorations, never reset content unless it's from server (after approval)
-  useEffect(() => {
-    if (!editor) return;
-    
-    // On initial mount, set content once
-    if (isInitialMountRef.current) {
-      const cleanContent = stripChangeIndicators(content);
-      isProgrammaticUpdateRef.current = true; // Mark as programmatic
-      (editor as any).__isProgrammaticUpdate = true; // Store on editor instance
-      editor.commands.setContent(cleanContent);
-      setTimeout(() => {
-        isProgrammaticUpdateRef.current = false;
-        (editor as any).__isProgrammaticUpdate = false;
-      }, 100);
-      lastContentRef.current = cleanContent;
-      lastPendingChangesCountRef.current = pendingChanges?.filter(c => !c.status || c.status === "pending").length || 0;
-      isInitialMountRef.current = false;
-      return;
-    }
-    
-    const currentHTML = editor.getHTML();
-    const cleanCurrentHTML = stripChangeIndicators(currentHTML);
-    const cleanContent = stripChangeIndicators(content);
-    const pendingCount = pendingChanges?.filter(c => !c.status || c.status === "pending").length || 0;
-    
-    // Check if we've already set this exact content
-    if (lastContentRef.current === cleanContent && lastPendingChangesCountRef.current === pendingCount) {
-      return; // Already set, skip update
-    }
-    
-    // FIX: Prevent setContent() after step application
-    // If steps were just applied via handleApproveChange, skip content sync
-    if ((editor as any).__stepsJustApplied) {
-      console.log("Skipping content sync - steps were just applied");
-      return;
-    }
-    
-    // CRITICAL: Only update content if it's from server (like after approval)
-    // Never reset content for normal edits or when suggesting
-    // FIX: After step-based approval, editor is already updated via transaction
-    // Do NOT reset content - it would undo the step application
-    const contentLengthDiff = Math.abs(cleanContent.length - cleanCurrentHTML.length);
-    const contentDiffers = cleanContent !== cleanCurrentHTML;
-    
-    // Check if content actually changed (not just formatting)
-    // If content prop changed and it's different from current editor content, update it
-    // This handles both major changes (>50 chars) and minor changes from approvals
-    // FIX: Skip if content differs slightly - may be from step application
-    if (contentDiffers && lastContentRef.current !== cleanContent) {
-      // Content changed - could be from server (approved suggestion) or initial load
-      // Only update if:
-      // 1. It's a significant change (>50 chars), OR
-      // 2. The content prop is different from what we last set (meaning it came from server)
-      const isSignificantChange = contentLengthDiff > 50;
-      
-      // FIX: Only setContent for significant changes, never after step application
-      if (isSignificantChange && !(editor as any).__stepsJustApplied) {
-        console.log("Content change detected, updating from prop. Length diff:", contentLengthDiff);
-      isUpdatingRef.current = true;
-      isProgrammaticUpdateRef.current = true; // Mark as programmatic
-      (editor as any).__isProgrammaticUpdate = true; // Store on editor instance
-      editor.commands.setContent(cleanContent);
-      setTimeout(() => {
-        isProgrammaticUpdateRef.current = false;
-        (editor as any).__isProgrammaticUpdate = false;
-      }, 100);
-      
-      // Update refs
-      lastContentRef.current = cleanContent;
-      lastPendingChangesCountRef.current = pendingCount;
-      
-        // Update extension with new pending changes
-        const extension = editor.extensionManager.extensions.find((ext: any) => ext.name === "changeTracking");
-      if (extension) {
-        extension.options.pendingChanges = pendingChanges || [];
-          // Trigger decoration update
-        setTimeout(() => {
-            const tr = editor.state.tr;
-            editor.view.dispatch(tr);
-          isUpdatingRef.current = false;
-          }, 150);
-      } else {
-        setTimeout(() => {
-          isUpdatingRef.current = false;
-        }, 100);
-      }
-      }
-    } else if (pendingCount !== lastPendingChangesCountRef.current) {
-      // Only pending count changed - just update decorations, NEVER reset content
-      console.log("Pending count changed, updating decorations only");
-      const extension = editor.extensionManager.extensions.find((ext: any) => ext.name === "changeTracking");
-      if (extension) {
-        extension.options.pendingChanges = pendingChanges || [];
-        // Trigger decoration update without resetting content
-        requestAnimationFrame(() => {
-          const tr = editor.state.tr;
-          editor.view.dispatch(tr);
-        });
-      }
-      lastPendingChangesCountRef.current = pendingCount;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cleanContent, editor, pendingChanges?.length]);
+  // NOTE: Shadow suggestions are now shown via DECORATIONS only (Base Doc + Overlay strategy)
+  // We do NOT apply steps to the document - the editor keeps the canonical content
+  // and decorations show deletions (strikethrough) and insertions (widgets)
+  // 
+  // The old shadow-apply effect has been removed to support the new strategy.
 
 
   if (!editor) {
@@ -494,14 +1026,21 @@ function TiptapEditor({ content, onUpdate, onBlur, placeholder, onTextSelect, ed
       </div>
 
       {/* Editor Content */}
-      <EditorContent editor={editor} />
+      <div
+        onClick={() => {
+          if (hasPendingChanges && onPendingChangeClick) {
+            onPendingChangeClick();
+          }
+        }}
+      >
+        <EditorContent editor={editor} />
+      </div>
     </div>
   );
 }
 
 export default function Editor({ outline, bookId, onOutlineUpdate, isCollaboration = false, collaboratorRole = null }: EditorProps) {
   const [selectedItem, setSelectedItem] = useState<SelectedItem>(null);
-  const [tpContents, setTpContents] = useState<Record<number, string>>({});
   const [generatingTpId, setGeneratingTpId] = useState<number | null>(null);
   const [expandedChapters, setExpandedChapters] = useState<Record<number, boolean>>({});
   const [assetsModalOpen, setAssetsModalOpen] = useState(false);
@@ -533,12 +1072,261 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [inviteRole, setInviteRole] = useState<"editor" | "viewer" | "commenter">("commenter");
   const [isInviting, setIsInviting] = useState(false);
   const [contentChanges, setContentChanges] = useState<ContentChange[]>([]);
+
   const [isLoadingChanges, setIsLoadingChanges] = useState(false);
   const [hasAutoOpenedChanges, setHasAutoOpenedChanges] = useState(false);
+  const [focusedChangeTpId, setFocusedChangeTpId] = useState<number | null>(null);
   const isBookOwner = !isCollaboration;
   // Track original content for change detection (for collaborators)
   const [originalContents, setOriginalContents] = useState<Record<number, string>>({});
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState<Record<number, boolean>>({});
+  const currentUserId = (window as any).currentUserId ?? null;
+
+  const escapeHtml = (value: string): string =>
+    value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+
+  const getChangeSteps = (change: ContentChange) => {
+    const editorRef = editorRefs.current[change.talking_point]?.current;
+    const schema = editorRef?.state?.schema;
+    if (!schema) return [];
+    return parseSteps(schema, (change as any).step_json || []);
+  };
+
+  const getChangeDoc = (change: ContentChange) => {
+    const editorRef = editorRefs.current[change.talking_point]?.current;
+    return editorRef?.state?.doc || null;
+  };
+
+  const getChangePreviewText = (change: ContentChange): { deleted: string; inserted: string } => {
+    const doc = getChangeDoc(change);
+    if (!doc) return { deleted: "", inserted: "" };
+    const steps = getChangeSteps(change);
+    
+    // First try normal flow with parsed steps
+    const preview = getPreviewFragments(doc, steps, { maxFragment: 200 });
+    
+    console.log(`[getChangePreviewText] From getPreviewFragments: deleted="${preview.deleted}", inserted="${preview.inserted}"`);
+    
+    // ALWAYS extract from raw step_json - this is more reliable for compressed steps
+    const stepJson = (change as any).step_json;
+    const rawSteps = Array.isArray(stepJson) ? stepJson : [stepJson];
+    
+    const deletedParts: string[] = [];
+    const insertedParts: string[] = [];
+    
+    for (const raw of rawSteps) {
+      if (!raw || typeof raw !== "object") continue;
+      
+      console.log(`[getChangePreviewText] Raw step keys:`, Object.keys(raw));
+      
+      // Check for stored deletedText (from compression) - ACCUMULATE all deletions
+      if (raw.deletedText && typeof raw.deletedText === "string" && raw.deletedText.trim()) {
+        deletedParts.push(raw.deletedText);
+      }
+      
+      // Check for stored insertedText (from compression) - ACCUMULATE all insertions
+      if (raw.insertedText && typeof raw.insertedText === "string" && raw.insertedText.trim()) {
+        insertedParts.push(raw.insertedText);
+      }
+      // Fallback: extract from slice content
+      else if (raw.slice?.content && Array.isArray(raw.slice.content)) {
+        const extractText = (content: any[]): string => {
+          return content
+            .map((node: any) => {
+              if (node.type === "text" && node.text) return node.text;
+              if (node.content && Array.isArray(node.content)) return extractText(node.content);
+              return "";
+            })
+            .join("");
+        };
+        const sliceText = extractText(raw.slice.content);
+        if (sliceText.trim()) {
+          insertedParts.push(sliceText);
+        }
+      }
+    }
+    
+    // Join all parts with a separator for clarity
+    const rawDeleted = deletedParts.join(" ... ");
+    const rawInserted = insertedParts.join(" ... ");
+    
+    console.log(`[getChangePreviewText] Extracted from raw: deleted="${rawDeleted}", inserted="${rawInserted}"`);
+    
+    // Prefer raw extraction if it has content (more reliable for compressed steps)
+    // Filter out very short deletions that are likely artifacts (like single "-" or whitespace)
+    const cleanDeleted = rawDeleted && rawDeleted.length > 1 && rawDeleted.trim().length > 0 ? rawDeleted : "";
+    
+    if (cleanDeleted || rawInserted) {
+      return { deleted: cleanDeleted, inserted: rawInserted };
+    }
+    
+    // Fall back to getPreviewFragments result, but also clean short artifacts
+    const cleanPreviewDeleted = preview.deleted && preview.deleted.length > 1 && preview.deleted.trim().length > 0 
+      ? preview.deleted 
+      : "";
+    return { deleted: cleanPreviewDeleted, inserted: preview.inserted };
+  };
+
+  const getChangePreviewHtml = (change: ContentChange): string => {
+    const diff = getChangePreviewText(change);
+    if (!diff.deleted && !diff.inserted) return "";
+
+    const parts: string[] = [];
+    if (diff.deleted) {
+      parts.push(
+        `<span class="pending-step-deletion" data-pending-preview="deletion">${escapeHtml(diff.deleted)}</span>`
+      );
+    }
+    if (diff.inserted) {
+      parts.push(
+        `<span class="pending-step-insertion" data-pending-preview="insertion">${escapeHtml(diff.inserted)}</span>`
+      );
+    }
+    return parts.join(" ").trim();
+  };
+
+  const getMappedRangeFromStepJson = (doc: any, schema: any, stepJson: any): { from: number; to: number } | null => {
+    if (!stepJson || !doc) return null;
+    const steps = parseSteps(schema, stepJson);
+    if (steps.length === 0) return null;
+    const mapping = new Mapping();
+    for (const step of steps) {
+      const stepAny = step as any;
+      if (typeof stepAny.from !== "number" || typeof stepAny.to !== "number") {
+        continue;
+      }
+      const mappedFrom = mapping.map(stepAny.from, -1);
+      const mappedTo = mapping.map(stepAny.to, 1);
+      const from = Math.max(1, Math.min(mappedFrom, doc.content.size));
+      const to = Math.max(1, Math.min(mappedTo, doc.content.size));
+
+      const hasSlice = stepAny.slice && stepAny.slice.size > 0;
+      const isDeletion = stepAny.from < stepAny.to && !hasSlice;
+      const isReplacement = stepAny.from < stepAny.to && hasSlice;
+      const isInsertion = stepAny.from === stepAny.to && hasSlice;
+
+      if ((isDeletion || isReplacement) && from < to) {
+        return { from, to };
+      }
+      if (isInsertion) {
+        return { from, to: from };
+      }
+
+      mapping.appendMap(step.getMap());
+    }
+    return null;
+  };
+
+  const findTextRangeInDoc = (doc: any, targetText: string): { from: number; to: number } | null => {
+    if (!doc || !targetText) return null;
+    const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
+    const normalizedTarget = normalize(targetText);
+    if (!normalizedTarget) return null;
+
+    let normalizedText = "";
+    const positionMap: Array<{ pmPos: number; charIndex: number }> = [];
+
+    doc.nodesBetween(0, doc.content.size, (node: any, pos: number) => {
+      if (node.isText) {
+        const nodeText = node.text || "";
+        for (let i = 0; i < nodeText.length; i++) {
+          const char = nodeText[i];
+          const pmPos = pos + 1 + i;
+          if (/\s/.test(char)) {
+            if (normalizedText.length === 0 || !/\s/.test(normalizedText[normalizedText.length - 1])) {
+              normalizedText += " ";
+              positionMap.push({ pmPos, charIndex: normalizedText.length - 1 });
+            } else {
+              positionMap.push({ pmPos, charIndex: normalizedText.length - 1 });
+            }
+          } else {
+            normalizedText += char;
+            positionMap.push({ pmPos, charIndex: normalizedText.length - 1 });
+          }
+        }
+      }
+      return true;
+    });
+
+    const normalizedDoc = normalize(normalizedText);
+    if (!normalizedDoc) return null;
+
+    const startIndex = normalizedDoc.indexOf(normalizedTarget);
+    if (startIndex < 0) return null;
+    const endIndex = startIndex + normalizedTarget.length;
+
+    const findPmPosForCharIndex = (index: number): number | null => {
+      const exact = positionMap.find((m) => m.charIndex === index);
+      if (exact) return exact.pmPos;
+      if (positionMap.length === 0) return null;
+      const closest = positionMap.reduce((prev, curr) =>
+        Math.abs(curr.charIndex - index) < Math.abs(prev.charIndex - index) ? curr : prev
+      );
+      return closest.pmPos;
+    };
+
+    const pmStart = findPmPosForCharIndex(startIndex);
+    const pmEnd = findPmPosForCharIndex(Math.max(endIndex - 1, startIndex));
+    if (!pmStart || !pmEnd) return null;
+
+    const from = Math.max(1, pmStart);
+    const to = Math.min(doc.content.size, pmEnd + 1);
+    if (to < from) return null;
+    return { from, to };
+  };
+
+  const extractInsertedTextFromStepJson = (stepJson: any): string => {
+    const steps = Array.isArray(stepJson) ? stepJson : [stepJson];
+    const extract = (node: any): string => {
+      if (!node) return "";
+      if (node.type === "text" && node.text) return node.text;
+      if (Array.isArray(node.content)) return node.content.map(extract).join("");
+      return "";
+    };
+    return steps
+      .map((raw) => raw?.slice?.content)
+      .filter(Boolean)
+      .map((content: any) => (Array.isArray(content) ? content.map(extract).join("") : ""))
+      .filter(Boolean)
+      .join(" ");
+  };
+
+  const highlightChangeInEditor = (change: ContentChange) => {
+    const tpId = change.talking_point;
+    const editorRef = editorRefs.current[tpId]?.current;
+    if (!editorRef) return;
+
+    const { state, view } = editorRef;
+    if (!state?.doc || !view) return;
+
+    const stepJson = (change as any).step_json;
+    const range =
+      getMappedRangeFromStepJson(state.doc, state.schema, stepJson) ||
+      (() => {
+        const insertedText = extractInsertedTextFromStepJson(stepJson);
+        return insertedText ? findTextRangeInDoc(state.doc, insertedText) : null;
+      })();
+
+    if (range) {
+      editorRef.commands.setTextSelection(range);
+      view.dispatch(state.tr.scrollIntoView());
+    } else {
+      editorRef.commands.focus();
+      view.dispatch(state.tr.scrollIntoView());
+    }
+  };
+
+  const getOldestPendingChangeId = (tpId: number): number | null => {
+    const pending = contentChanges
+      .filter((c) => c.talking_point === tpId && (!c.status || c.status === "pending"))
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    return pending.length > 0 ? pending[0].id : null;
+  };
 
   // Auto-scroll chat to bottom when new messages arrive
   useEffect(() => {
@@ -572,18 +1360,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               sectionId: firstSection.id,
               sectionTitle: firstSection.title,
             });
-            // Load talking point contents
-            if (firstSection.talking_points) {
-              const contents: Record<number, string> = {};
-              firstSection.talking_points.forEach((tp) => {
-                if (tp.id) {
-                  // If content exists, use it; otherwise convert text to HTML
-                  const content = tp.content || (tp.text ? `<p>${tp.text}</p>` : "");
-                  contents[tp.id] = content;
-                }
-              });
-              setTpContents(contents);
-            }
+            // Content is sourced from canonical data; editor owns live state after mount
           }
         }
       } else {
@@ -598,17 +1375,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               sectionTitle: section.title,
             });
           }
-          // Reload talking point contents for current section
-          if (section.talking_points) {
-            const contents: Record<number, string> = {};
-            section.talking_points.forEach((tp) => {
-              if (tp.id) {
-                const content = tp.content || (tp.text ? `<p>${tp.text}</p>` : "");
-                contents[tp.id] = content;
-              }
-            });
-            setTpContents(contents);
-          }
+          // Content is sourced from canonical data; editor owns live state after mount
           // Ensure chapter is expanded
           setExpandedChapters((prev) => ({
             ...prev,
@@ -725,9 +1492,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         return;
       }
 
-      // For owners: Load changes for ALL talking points in the section
-      // For collaborators: Load changes for the active talking point only
-      const tpIdsToLoad = isBookOwner 
+      // For owners and editors: Load changes for ALL talking points in the section
+      // For viewers/commenters: Load changes for the active talking point only
+      const loadAllForSection = isBookOwner || collaboratorRole === "editor";
+      const tpIdsToLoad = loadAllForSection
         ? talkingPoints.map(tp => tp.id).filter((id): id is number => id !== null && id !== undefined)
         : [currentTalkingPointId || talkingPoints[0]?.id].filter((id): id is number => id !== null && id !== undefined);
 
@@ -776,6 +1544,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedItem?.sectionId, currentTalkingPointId, bookId, isBookOwner]);
 
+
   // Auto-open changes tab for owners if there are pending changes (only once when changes are first loaded)
   useEffect(() => {
     if (isBookOwner && contentChanges.length > 0 && !hasAutoOpenedChanges && !isLoadingChanges) {
@@ -800,50 +1569,35 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     setSelectionPosition(null);
     setCurrentTalkingPointId(null);
     setComments([]);
+    setFocusedChangeTpId(null);
     // Don't clear contentChanges here - let the useEffect handle it when selectedSection changes
     // FIX: Clear all captured steps when switching sections
     (window as any).__CAPTURED_STEPS_BY_TP__ = {};
     
-    // Load talking points for this section
-    const chapter = outline?.chapters?.find((ch) => ch.id === chapterId);
-    const section = chapter?.sections?.find((sec) => sec.id === sectionId);
-    if (section?.talking_points) {
-      const contents: Record<number, string> = {};
-      section.talking_points.forEach((tp) => {
-        if (tp.id) {
-          // If content exists, use it; otherwise convert text to HTML
-          const content = tp.content || (tp.text ? `<p>${tp.text}</p>` : "");
-          contents[tp.id] = content;
-        }
-      });
-      setTpContents(contents);
-    }
+    // Content is sourced from canonical data; editor owns live state after mount
   };
 
 
   // Strip change indicator spans from HTML before saving
   const stripChangeIndicators = (html: string): string => {
     if (!html) return html;
-    
-    // Remove all spans with data-change-type attributes
-    const tempDiv = document.createElement("div");
-    tempDiv.innerHTML = html;
-    
-    // Find and unwrap all change indicator spans
-    const changeSpans = tempDiv.querySelectorAll('[data-change-type]');
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const changeSpans = doc.querySelectorAll('[data-change-type]');
     changeSpans.forEach((span) => {
       const parent = span.parentNode;
       if (parent) {
-        // Move all children out of the span
         while (span.firstChild) {
           parent.insertBefore(span.firstChild, span);
         }
-        // Remove the empty span
         parent.removeChild(span);
       }
     });
-    
-    return tempDiv.innerHTML;
+
+    const serializer = new XMLSerializer();
+    const bodyHtml = serializer.serializeToString(doc.body);
+    return bodyHtml.replace(/^<body[^>]*>/, "").replace(/<\/body>$/, "");
   };
 
   const handleTpContentChange = (tpId: number, content: string) => {
@@ -852,21 +1606,15 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       return;
     }
     
-    // Strip change indicators before storing
+    // Strip change indicators before comparing
     const cleanContent = stripChangeIndicators(content);
     
-    setTpContents((prev) => {
-      const updated = { ...prev, [tpId]: cleanContent };
-      
-      // For collaborators, check if content has changed from original
-      if (!isBookOwner && originalContents[tpId] !== undefined) {
-        const original = originalContents[tpId];
-        const hasChanges = cleanContent !== original;
-        setHasUnsavedChanges((prev) => ({ ...prev, [tpId]: hasChanges }));
-      }
-      
-      return updated;
-    });
+    // For collaborators, check if content has changed from original
+    if (!isBookOwner && originalContents[tpId] !== undefined) {
+      const original = originalContents[tpId];
+      const hasChanges = cleanContent !== original;
+      setHasUnsavedChanges((prev) => ({ ...prev, [tpId]: hasChanges }));
+    }
   };
 
   /**
@@ -888,11 +1636,195 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       return;
     }
     
+    // Get the original canonical content BEFORE creating the change
+    const originalContent = originalContents[tpId] || "";
+    console.log(`[handleSuggestEdit] originalContents keys:`, Object.keys(originalContents));
+    console.log(`[handleSuggestEdit] originalContent for tpId=${tpId}:`, originalContent ? `"${originalContent.substring(0, 80)}..."` : "EMPTY");
+    
+    if (!originalContent) {
+      console.error(`[handleSuggestEdit] No original content stored for tpId=${tpId}! Cannot reset editor.`);
+    }
+    
+    // Get the editor to compress steps
+    const editorRef = editorRefs.current[tpId]?.current;
+    
+    // Compress steps to get the NET change(s)
+    // This handles cases like typing "carm" → backspace → "cart" = just "insert 'cart'"
+    // Also detects MULTIPLE separate changes and creates separate steps for each
+    let stepsToSubmit = capturedSteps;
+    if (editorRef && originalContent && capturedSteps.length > 0) {
+      try {
+        // Parse the original HTML to get a ProseMirror document for proper position mapping
+        const { DOMParser } = await import('prosemirror-model');
+        const schema = editorRef.state.schema;
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = originalContent;
+        const originalDoc = DOMParser.fromSchema(schema).parse(tempDiv);
+        
+        // Get text content from both
+        const originalText = originalDoc.textContent;
+        const finalText = editorRef.state.doc.textContent;
+        
+        console.log(`[handleSuggestEdit] Compressing: original="${originalText.substring(0, 50)}...", final="${finalText.substring(0, 50)}..."`);
+        
+        // If texts are the same, no change needed
+        if (originalText !== finalText) {
+          // Multi-hunk diff algorithm to detect SEPARATE edit regions
+          // This properly handles "add here, delete there" scenarios
+          type Hunk = { origStart: number; origEnd: number; finalStart: number; finalEnd: number; deleted: string; inserted: string };
+          const hunks: Hunk[] = [];
+          
+          const MIN_MATCH = 10; // Minimum matching chars to consider a "stable" region
+          
+          let origIdx = 0;
+          let finalIdx = 0;
+          
+          while (origIdx < originalText.length || finalIdx < finalText.length) {
+            // Skip matching characters
+            while (
+              origIdx < originalText.length &&
+              finalIdx < finalText.length &&
+              originalText[origIdx] === finalText[finalIdx]
+            ) {
+              origIdx++;
+              finalIdx++;
+            }
+            
+            // If we've consumed both strings, we're done
+            if (origIdx >= originalText.length && finalIdx >= finalText.length) {
+              break;
+            }
+            
+            // Found a difference - now find where texts sync up again
+            const hunkOrigStart = origIdx;
+            const hunkFinalStart = finalIdx;
+            
+            // Look for next matching region of at least MIN_MATCH characters
+            let foundMatch = false;
+            let bestOrigEnd = originalText.length;
+            let bestFinalEnd = finalText.length;
+            
+            // Search for sync point
+            for (let searchOrig = origIdx; searchOrig <= originalText.length - MIN_MATCH && !foundMatch; searchOrig++) {
+              for (let searchFinal = finalIdx; searchFinal <= finalText.length - MIN_MATCH && !foundMatch; searchFinal++) {
+                // Check if we have MIN_MATCH matching characters
+                let matchLen = 0;
+                while (
+                  searchOrig + matchLen < originalText.length &&
+                  searchFinal + matchLen < finalText.length &&
+                  originalText[searchOrig + matchLen] === finalText[searchFinal + matchLen]
+                ) {
+                  matchLen++;
+                }
+                
+                if (matchLen >= MIN_MATCH) {
+                  bestOrigEnd = searchOrig;
+                  bestFinalEnd = searchFinal;
+                  foundMatch = true;
+                }
+              }
+            }
+            
+            // Create hunk for this change region
+            const deleted = originalText.slice(hunkOrigStart, bestOrigEnd);
+            const inserted = finalText.slice(hunkFinalStart, bestFinalEnd);
+            
+            if (deleted || inserted) {
+              hunks.push({
+                origStart: hunkOrigStart,
+                origEnd: bestOrigEnd,
+                finalStart: hunkFinalStart,
+                finalEnd: bestFinalEnd,
+                deleted,
+                inserted,
+              });
+              console.log(`[handleSuggestEdit] Found hunk: origStart=${hunkOrigStart}, origEnd=${bestOrigEnd}, deleted="${deleted.substring(0, 30)}...", inserted="${inserted.substring(0, 30)}..."`);
+            }
+            
+            // Move past this hunk
+            origIdx = bestOrigEnd;
+            finalIdx = bestFinalEnd;
+          }
+          
+          console.log(`[handleSuggestEdit] Multi-hunk diff found ${hunks.length} separate changes`);
+          
+          if (hunks.length > 0) {
+            // Helper to map text offset to ProseMirror position
+            const textOffsetToDocPos = (textOffset: number): number => {
+              let result = 1;
+              let textSeen = 0;
+              let found = false;
+              
+              originalDoc.descendants((node: any, pos: number) => {
+                if (found) return false;
+                if (node.isText) {
+                  const nodeText = node.text || "";
+                  const nodeStart = textSeen;
+                  const nodeEnd = textSeen + nodeText.length;
+                  
+                  if (textOffset >= nodeStart && textOffset < nodeEnd) {
+                    result = pos + (textOffset - nodeStart);
+                    found = true;
+                    return false;
+                  } else if (textOffset === nodeEnd) {
+                    result = pos + nodeText.length;
+                  }
+                  textSeen = nodeEnd;
+                }
+                return true;
+              });
+              
+              const docSize = originalDoc.content.size;
+              return Math.max(1, Math.min(result, docSize));
+            };
+            
+            // Create a step for EACH hunk (separate edit regions)
+            const steps: any[] = [];
+            
+            // Process hunks in REVERSE order (from end to start) so positions don't shift
+            // when we have multiple changes relative to original doc
+            const sortedHunks = [...hunks].sort((a, b) => b.origStart - a.origStart);
+            
+            sortedHunks.forEach((hunk, idx) => {
+              const from = textOffsetToDocPos(hunk.origStart);
+              const to = textOffsetToDocPos(hunk.origEnd);
+              
+              console.log(`[handleSuggestEdit] Creating step ${idx + 1}/${sortedHunks.length}: from=${from}, to=${to}`);
+              console.log(`  deleted="${(hunk.deleted || '').substring(0, 50)}..." (${(hunk.deleted || '').length} chars)`);
+              console.log(`  inserted="${(hunk.inserted || '').substring(0, 50)}..." (${(hunk.inserted || '').length} chars)`);
+              
+              const step: any = {
+                stepType: "replace",
+                from: from,
+                to: to,
+              };
+              
+              if (hunk.inserted) {
+                step.slice = { content: [{ type: "text", text: hunk.inserted }] };
+                step.insertedText = hunk.inserted;
+              }
+              
+              if (hunk.deleted) {
+                step.deletedText = hunk.deleted;
+              }
+              
+              steps.push(step);
+            });
+            
+            console.log(`[handleSuggestEdit] Created ${steps.length} steps from ${hunks.length} hunks`);
+            stepsToSubmit = steps;
+          }
+        }
+      } catch (e) {
+        console.warn(`[handleSuggestEdit] Step compression failed, using original steps:`, e);
+      }
+    }
+    
     try {
-      // Send ONLY step_json - this is the ONLY source of truth
+      // Send compressed step_json
       const result = await createContentChange({
         talking_point_id: tpId,
-        step_json: capturedSteps, // Array of step.toJSON() objects
+        step_json: stepsToSubmit,
       });
       
       if (result.success) {
@@ -923,6 +1855,46 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               console.log(`Updated contentChanges: ${updated.length} total changes`);
               return updated;
             });
+            
+            // CRITICAL: Reset editor to base content AND dispatch decorations
+            // Must do this AFTER state updates to ensure proper timing
+            setTimeout(() => {
+              const editorRefAfter = editorRefs.current[tpId]?.current;
+              if (editorRefAfter && originalContent) {
+                console.log(`[handleSuggestEdit] Resetting editor content to original`);
+                console.log(`[handleSuggestEdit] originalContent: "${originalContent.substring(0, 100)}..."`);
+                console.log(`[handleSuggestEdit] Current editor content: "${editorRefAfter.getHTML?.().substring(0, 100)}..."`);
+                
+                // Set flag to prevent step capture
+                (editorRefAfter as any).__isProgrammaticUpdate = true;
+                
+                // Reset to original content
+                editorRefAfter.commands.setContent(originalContent, false, { preserveWhitespace: 'full' });
+                
+                // After a small delay, dispatch decorations
+                setTimeout(() => {
+                  (editorRefAfter as any).__isProgrammaticUpdate = false;
+                  console.log(`[handleSuggestEdit] Content after reset: "${editorRefAfter.getHTML?.().substring(0, 100)}..."`);
+                  
+                  // Get ALL pending changes for this talking point (not just the new one)
+                  // to show all pending decorations together
+                  const pendingChanges = changesResult.data
+                    .filter((c: any) => c.talking_point === tpId && (!c.status || c.status === "pending"))
+                    .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+                  
+                  if (pendingChanges.length > 0) {
+                    // CRITICAL: Pass as batches (array of arrays) - each content change is a batch
+                    const stepBatches = pendingChanges.map((c: any) => 
+                      Array.isArray(c.step_json) ? c.step_json : [c.step_json]
+                    );
+                    const totalSteps = stepBatches.reduce((sum: number, batch: any[]) => sum + batch.length, 0);
+                    console.log(`[handleSuggestEdit] Dispatching ${totalSteps} steps in ${stepBatches.length} batches for decoration`);
+                    const tr = editorRefAfter.state.tr.setMeta(pendingShadowHighlightKey, stepBatches);
+                    editorRefAfter.view.dispatch(tr);
+                  }
+                }, 50);
+              }
+            }, 100);
           } else {
             console.error("Failed to load changes:", changesResult);
             // Fallback to full reload
@@ -950,7 +1922,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
    * handleApproveChange - Applies approved suggestion using ProseMirror steps
    * 
    * HARD CONSTRAINTS:
-   * - Deserializes steps using Step.fromJSON(schema, stepJson)
+   * - Deserializes steps using parseSteps(schema, stepJson[])
    * - Applies all steps in a SINGLE transaction
    * - NEVER calls setContent, getHTML, or rehydrates editor
    * - Editor content is NEVER reset
@@ -973,6 +1945,14 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       return;
     }
 
+    if (isBookOwner && change.status === "pending") {
+      const oldestPendingId = getOldestPendingChangeId(change.talking_point);
+      if (oldestPendingId && change.id !== oldestPendingId) {
+        alert("Please approve earlier changes for this talking point first.");
+        return;
+      }
+    }
+
     try {
       const editorRef = editorRefs.current[changeTpId]?.current;
       if (!editorRef) {
@@ -993,47 +1973,102 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         return;
       }
       
+      // Ensure we are applying against the correct base document to avoid invalid steps
+      const baseDocJson = (change as any).base_doc_json || (change as any).base_doc;
+      if (baseDocJson) {
+        try {
+          const baseDoc = PMNode.fromJSON(state.schema, baseDocJson);
+          if (!baseDoc.eq(state.doc)) {
+            alert(
+              "This suggestion was created on an older version of the document. Please refresh to rebase before approving."
+            );
+            return;
+          }
+        } catch (error) {
+          console.warn("[Approve] Invalid base_doc_json; cannot safely apply steps.", error);
+          alert("This suggestion cannot be applied safely. Please refresh and try again.");
+          return;
+        }
+      }
+
       // Create transaction from current state
       let tr = state.tr;
       
-      // Deserialize and apply each step in sequence
-      // Each step modifies the transaction's document, and subsequent steps see the updated state
-      for (let i = 0; i < stepJsonArray.length; i++) {
-        const stepJson = stepJsonArray[i];
+      console.log(`[handleApproveChange] Raw stepJsonArray:`, JSON.stringify(stepJsonArray, null, 2));
+      
+      const steps = parseSteps(state.schema, stepJsonArray);
+      console.log(`[handleApproveChange] Parsed ${steps.length} steps from ${stepJsonArray.length} raw steps`);
+      
+      if (steps.length !== stepJsonArray.length) {
+        console.error(`[handleApproveChange] Step parsing mismatch! Raw: ${stepJsonArray.length}, Parsed: ${steps.length}`);
+        console.error(`[handleApproveChange] Failed to parse some steps. Check step format.`);
+        throw new Error("One or more steps could not be parsed.");
+      }
+
+      // Validate and apply steps sequentially against the live transaction
+      // IMPORTANT: Use step.map(tr.mapping) to adjust positions after each step
+      let tempDoc = tr.doc;
+      console.log(`[handleApproveChange] Initial doc size: ${tempDoc.content.size}`);
+      console.log(`[handleApproveChange] Initial doc text: "${tempDoc.textContent.substring(0, 100)}..."`);
+      
+      for (let i = 0; i < steps.length; i++) {
+        const originalStep = steps[i];
+        const stepAny = originalStep as any;
+        
+        console.log(`[handleApproveChange] Applying step ${i + 1}/${steps.length}:`);
+        console.log(`  original: from=${stepAny.from}, to=${stepAny.to}`);
+        console.log(`  deletedText="${stepAny.deletedText || ''}", insertedText="${stepAny.insertedText || ''}"`);
+        console.log(`  slice size=${stepAny.slice?.size || 0}`);
+        console.log(`  current doc size=${tempDoc.content.size}`);
+        
         try {
-          // Deserialize the step using the current schema
-          const step = Step.fromJSON(state.schema, stepJson);
+          // Map the step through the current transaction mapping
+          // This adjusts positions based on previous steps in the same transaction
+          const mappedStep = originalStep.map(tr.mapping);
           
-          // Check if step can be applied to the current transaction document
-          // step.apply() returns a result object with 'doc' and 'failed' properties
-          const checkResult = step.apply(tr.doc);
-          
-          if (checkResult.failed) {
-            throw new Error(`Step ${i + 1} validation failed: ${checkResult.failed}`);
+          if (!mappedStep) {
+            // Step's target content was deleted by a previous step - skip it
+            console.log(`  Step ${i + 1} mapping returned null - content was deleted, skipping`);
+            continue;
           }
           
-          // Step is valid - apply it to the transaction
-          // tr.step() returns the transaction if successful, or null if it failed
-          const stepResult = tr.step(step);
+          const mappedAny = mappedStep as any;
+          console.log(`  mapped: from=${mappedAny.from}, to=${mappedAny.to}`);
           
-          // Check if the step application was successful
+          if (typeof mappedAny.from === "number" && typeof mappedAny.to === "number") {
+            const docSize = tempDoc.content.size;
+            if (mappedAny.from < 0 || mappedAny.to < 0 || mappedAny.from > docSize || mappedAny.to > docSize) {
+              console.error(`Step ${i + 1} out of bounds after mapping! from=${mappedAny.from}, to=${mappedAny.to}, docSize=${docSize}`);
+              alert("Change incompatible");
+              return;
+            }
+          }
+
+          const testResult = mappedStep.apply(tempDoc);
+          if (testResult.failed || !testResult.doc) {
+            console.error(`Step ${i + 1} apply failed: ${testResult.failed}`);
+            throw new Error(`Step ${i + 1} validation failed: ${testResult.failed || "apply_failed"}`);
+          }
+          
+          console.log(`  ✓ Step ${i + 1} applied successfully. New doc size: ${testResult.doc.content.size}`);
+          console.log(`  New doc text: "${testResult.doc.textContent.substring(0, 100)}..."`);
+
+          const stepResult = tr.step(mappedStep);
           if (stepResult === null) {
-            throw new Error(`Step ${i + 1} could not be applied to transaction`);
+            console.error(`Step ${i + 1} tr.step returned null`);
+            alert("Change incompatible");
+            return;
           }
-          
-          // Update tr to the result (which has the updated document)
+
           tr = stepResult;
-          
+          tempDoc = testResult.doc;
         } catch (error: any) {
-          console.error("❌ Error applying step:", error, stepJson);
-          console.error("Step index:", i, "Total steps:", stepJsonArray.length);
-          console.error("Current document size:", tr.doc.content.size);
-          console.error("Step JSON:", JSON.stringify(stepJson, null, 2));
-          
-          // Provide helpful error message
-          const errorMsg = error?.message || "Unknown error";
-          alert(`Error applying suggestion: Step ${i + 1} of ${stepJsonArray.length} could not be applied.\n\nReason: ${errorMsg}\n\nThe document may have changed since this suggestion was created. Please refresh the page and try again.`);
-          throw error;
+          console.error("❌ Error applying step:", error);
+          console.error("Step index:", i, "Total steps:", steps.length);
+          console.error("Current document size:", tempDoc.content.size);
+          console.error("Step JSON:", JSON.stringify(stepJsonArray[i], null, 2));
+          alert(`Change incompatible: ${error?.message || "validation failed"}`);
+          return;
         }
       }
       
@@ -1049,17 +2084,20 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       // Get the updated HTML from the editor after steps are applied
       const updatedContent = editorRef.getHTML();
       
+      console.log(`[handleApproveChange] Saving updated content for tpId=${changeTpId}:`);
+      console.log(`[handleApproveChange] Content (first 200 chars): "${updatedContent.substring(0, 200)}..."`);
+      console.log(`[handleApproveChange] Content length: ${updatedContent.length}`);
+      
       // Update the talking point content in the database
       const saveResult = await updateTalkingPoint(changeTpId, { content: updatedContent });
+      console.log(`[handleApproveChange] Save result:`, saveResult);
+      
       if (!saveResult.success) {
         console.error("Failed to save updated content:", saveResult);
         alert("Steps were applied but failed to save content. Please refresh and try again.");
         (editorRef as any).__stepsJustApplied = false;
         return;
       }
-      
-      // Update local state to reflect the saved content
-      setTpContents((prev) => ({ ...prev, [changeTpId]: updatedContent }));
       
       // Clear the flag after a delay to allow content sync to resume
       setTimeout(() => {
@@ -1071,8 +2109,86 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         if (result.success) {
         console.log("✅ Change approved, applied, and saved");
         
+        // CRITICAL: Remap positions of OTHER pending changes for this talking point
+        // The approved change shifted the document, so other changes' positions are now stale
+        const otherPendingChanges = contentChanges.filter(
+          (c) => c.talking_point === changeTpId && 
+                 c.id !== change.id && 
+                 (!c.status || c.status === "pending")
+        );
+        
+        if (otherPendingChanges.length > 0 && tr.mapping) {
+          console.log(`[handleApproveChange] Remapping ${otherPendingChanges.length} other pending changes`);
+          
+          for (const otherChange of otherPendingChanges) {
+            try {
+              const otherStepJson = otherChange.step_json;
+              if (!otherStepJson || !Array.isArray(otherStepJson)) continue;
+              
+              // Map each step's positions through the applied transaction's mapping
+              const remappedSteps = otherStepJson.map((rawStep: any) => {
+                if (!rawStep || typeof rawStep.from !== "number" || typeof rawStep.to !== "number") {
+                  return rawStep;
+                }
+                
+                // Map positions: -1 for left association on 'from', 1 for right association on 'to'
+                const newFrom = tr.mapping.map(rawStep.from, -1);
+                const newTo = tr.mapping.map(rawStep.to, 1);
+                
+                console.log(`[handleApproveChange] Remapping change ${otherChange.id}: ${rawStep.from}-${rawStep.to} -> ${newFrom}-${newTo}`);
+                
+                return {
+                  ...rawStep,
+                  from: newFrom,
+                  to: newTo,
+                };
+              });
+              
+              // Update the change on the server with remapped positions
+              const updateResult = await updateContentChangeStepJson(otherChange.id, remappedSteps);
+              if (updateResult.success) {
+                console.log(`[handleApproveChange] Successfully remapped change ${otherChange.id}`);
+              } else {
+                console.error(`[handleApproveChange] Failed to remap change ${otherChange.id}:`, updateResult);
+              }
+            } catch (remapError) {
+              console.error(`[handleApproveChange] Error remapping change ${otherChange.id}:`, remapError);
+            }
+          }
+        }
+        
         // Reload changes to update UI
+        console.log(`[handleApproveChange] Reloading changes after position remapping...`);
         await loadChanges();
+        console.log(`[handleApproveChange] Changes reloaded`);
+        
+        // Force decoration refresh after state update
+        // Use setTimeout to ensure React has processed the state update
+        setTimeout(async () => {
+          const editorRefNow = editorRefs.current[changeTpId]?.current;
+          if (editorRefNow) {
+            // Fetch fresh changes from server to get updated positions
+            const freshChangesResult = await getContentChanges(changeTpId);
+            if (freshChangesResult.success && freshChangesResult.data) {
+              const freshPendingChanges = freshChangesResult.data
+                .filter((c: any) => c.id !== change.id && (!c.status || c.status === "pending"))
+                .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+              
+              if (freshPendingChanges.length > 0) {
+                const nextPending = freshPendingChanges[0];
+                console.log(`[handleApproveChange] Dispatching decorations for next pending change ${nextPending.id}`);
+                console.log(`[handleApproveChange] Updated step_json positions:`, JSON.stringify(nextPending.step_json));
+                const tr = editorRefNow.state.tr.setMeta(pendingStepPreviewKey, nextPending.step_json);
+                editorRefNow.view.dispatch(tr);
+              } else {
+                // Clear decorations if no more pending changes
+                console.log(`[handleApproveChange] No more pending changes, clearing decorations`);
+                const tr = editorRefNow.state.tr.setMeta(pendingStepPreviewKey, null);
+                editorRefNow.view.dispatch(tr);
+              }
+            }
+          }
+        }, 100);
         
         // Reload book outline to get the updated content
         if (bookId && onOutlineUpdate) {
@@ -1104,20 +2220,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           // Store the original content when first loaded
           const content = tp.content || (tp.text ? `<p>${tp.text}</p>` : "");
           newOriginalContents[tp.id] = content;
+          console.log(`[originalContents] Storing original for tpId=${tp.id}: "${content.substring(0, 50)}..."`);
         }
       });
       if (Object.keys(newOriginalContents).length > 0) {
         setOriginalContents((prev) => ({ ...prev, ...newOriginalContents }));
-        // Also initialize tpContents if not already set
-        setTpContents((prev) => {
-          const updated = { ...prev };
-          selectedSection.talking_points?.forEach((tp) => {
-            if (tp.id && !updated[tp.id]) {
-              updated[tp.id] = newOriginalContents[tp.id];
-            }
-          });
-          return updated;
-        });
       }
     }
   }, [selectedSection, isBookOwner]);
@@ -1129,9 +2236,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       return;
     }
     
-    const content = tpContents[tpId];
-    if (content !== undefined && bookId) {
-      const res = await updateTalkingPoint(tpId, { content: content });
+    const editorRef = editorRefs.current[tpId]?.current;
+    if (editorRef && bookId) {
+      const content = editorRef.getHTML();
+      const res = await updateTalkingPoint(tpId, { content });
       if (res.success && onOutlineUpdate) {
         const updatedBook = await fetchBook(bookId);
         if (updatedBook.success) {
@@ -1315,15 +2423,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             onOutlineUpdate(updatedBook.data);
             // Reload talking point content
             if (updatedBook.data && selectedItem) {
-              const chapter = updatedBook.data.chapters?.find((ch: { id: number }) => ch.id === selectedItem.chapterId);
-              const section = chapter?.sections?.find((sec: { id: number }) => sec.id === selectedItem.sectionId);
-              const updatedTp = section?.talking_points?.find((t: { id: number }) => t.id === activeTpId);
-              if (updatedTp?.content) {
-                setTpContents((prev) => ({
-                  ...prev,
-                  [activeTpId]: updatedTp.content,
-                }));
-              }
+              // Canonical updates will flow through onOutlineUpdate; editor owns live state
             }
           }
         }
@@ -1694,7 +2794,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       // For talking point level actions, use the entire content
       if (!activeTpId) return;
       
-      const textToProcess = requiresSelection ? (selectedText || "") : (tpContents[activeTpId] || "");
+      const editorRef = editorRefs.current[activeTpId]?.current;
+      const fullText = editorRef ? editorRef.getText() : "";
+      const textToProcess = requiresSelection ? (selectedText || "") : fullText;
       
       const result = await quickTextAction({
         book_id: bookId!,
@@ -1719,6 +2821,18 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         const prependActions = ["rewrite_heading", "suggest_subheading"];
         const shouldPrepend = prependActions.includes(action);
         
+        const replaceEditorContent = (nextHtml: string) => {
+          if (!editor) return;
+          const docSize = editor.state.doc.content.size;
+          editor
+            .chain()
+            .focus()
+            .setTextSelection({ from: 0, to: docSize })
+            .deleteSelection()
+            .insertContent(nextHtml)
+            .run();
+        };
+
         if (requiresSelection && editor && selectionRange) {
           // Replace the selected text with the modified text using Tiptap commands
           editor
@@ -1728,16 +2842,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             .deleteSelection()
             .insertContent(modifiedText)
             .run();
-
-          setTimeout(() => {
-            const newContent = editor.getHTML();
-            setTpContents((prev) => ({ ...prev, [activeTpId]: newContent }));
-          }, 0);
         } else if (editor && activeTpId) {
           // For talking point level actions or when no selection
           if (shouldPrepend) {
             // Prepend heading to the top of the content
-            const currentContent = tpContents[activeTpId] || "";
+            const currentContent = editor.getHTML() || "";
             const headingTag = action === "rewrite_heading" ? "h1" : "h2";
             const headingHtml = `<${headingTag}>${modifiedText}</${headingTag}>`;
             
@@ -1751,12 +2860,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               newContent = currentContent.trim() ? `${headingHtml}\n${currentContent}` : headingHtml;
             }
             
-            editor.commands.setContent(newContent);
-            setTpContents((prev) => ({ ...prev, [activeTpId]: newContent }));
+            replaceEditorContent(newContent);
             handleTpContentChange(activeTpId, newContent);
           } else if (requiresSelection && selectedText) {
             // Try to find and replace selected text
-          const currentContent = tpContents[activeTpId] || "";
+          const currentContent = editor.getHTML() || "";
           const textToReplace = selectedText.trim();
           
           const modifiedContent = currentContent.replace(
@@ -1764,44 +2872,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               modifiedText
           );
           
-          editor.commands.setContent(modifiedContent);
-          setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
+          replaceEditorContent(modifiedContent);
           handleTpContentChange(activeTpId, modifiedContent);
         } else {
             // Replace entire content (for other talking point level actions)
-            editor.commands.setContent(modifiedText);
-            setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedText }));
-            handleTpContentChange(activeTpId, modifiedText);
-          }
-        } else if (activeTpId) {
-          // No editor available - just update state
-          if (shouldPrepend) {
-            const currentContent = tpContents[activeTpId] || "";
-            const headingTag = action === "rewrite_heading" ? "h1" : "h2";
-            const headingHtml = `<${headingTag}>${modifiedText}</${headingTag}>`;
-            
-            let newContent: string;
-            if (currentContent.trim().match(/^<h[1-6]/)) {
-              newContent = currentContent.replace(/^<h[1-6][^>]*>.*?<\/h[1-6]>/, headingHtml);
-            } else {
-              newContent = currentContent.trim() ? `${headingHtml}\n${currentContent}` : headingHtml;
-            }
-            
-            setTpContents((prev) => ({ ...prev, [activeTpId]: newContent }));
-            handleTpContentChange(activeTpId, newContent);
-          } else if (requiresSelection && selectedText) {
-          const currentContent = tpContents[activeTpId] || "";
-          const textToReplace = selectedText.trim();
-          
-          const modifiedContent = currentContent.replace(
-            new RegExp(textToReplace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
-              modifiedText
-          );
-          
-          setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedContent }));
-          handleTpContentChange(activeTpId, modifiedContent);
-          } else {
-            setTpContents((prev) => ({ ...prev, [activeTpId]: modifiedText }));
+            replaceEditorContent(modifiedText);
             handleTpContentChange(activeTpId, modifiedText);
           }
         }
@@ -1839,7 +2914,17 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         // Convert plain text to HTML for rich text editor
         const generatedText = result.data.generated_text;
         const htmlText = generatedText.split('\n\n').map((para: string) => `<p>${para.replace(/\n/g, '<br>')}</p>`).join('');
-        setTpContents((prev) => ({ ...prev, [tpId]: htmlText }));
+        const editorRef = editorRefs.current[tpId]?.current;
+        if (editorRef) {
+          const docSize = editorRef.state.doc.content.size;
+          editorRef
+            .chain()
+            .focus()
+            .setTextSelection({ from: 0, to: docSize })
+            .deleteSelection()
+            .insertContent(htmlText)
+            .run();
+        }
         
         // Auto-save the generated text to the content field (save as HTML)
         const res = await updateTalkingPoint(tpId, { content: htmlText });
@@ -2001,11 +3086,43 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                 <div className="max-w-3xl mx-auto space-y-6">
                   {selectedSection.talking_points?.map((tp, ti) => {
                     const tpId = tp.id ?? -1;
-                    const content = tpContents[tpId] ?? tp.content ?? (tp.text ? `<p>${tp.text}</p>` : "");
+                    const canonicalContent = tp.content ?? (tp.text ? `<p>${tp.text}</p>` : "");
+                    const content = canonicalContent;
+                    const shadowSuggestions =
+                      !isBookOwner && collaboratorRole === "editor"
+                        ? contentChanges
+                            .filter(
+                              (change) =>
+                                change.talking_point === tpId &&
+                                (!change.status || change.status === "pending") &&
+                                (currentUserId === null || change.user === currentUserId)
+                            )
+                            .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+                            .map((change) => ({ id: change.id, step_json: change.step_json }))
+                        : [];
+                    // Only show submitted pending changes - preview appears after "Suggest Edit" is clicked
+                    // CRITICAL: Keep as batches (array of arrays) - each content change is relative to base doc
+                    // Cumulative offset only applies WITHIN a batch, not BETWEEN batches
+                    const pendingHighlightStepJsons = shadowSuggestions.map((s) => 
+                      Array.isArray(s.step_json) ? s.step_json : [s.step_json]
+                    );
                     const isGenerating = generatingTpId === tpId;
+                    const hasPendingChanges = isBookOwner && contentChanges.some(
+                      (change) => change.talking_point === tpId && (!change.status || change.status === "pending")
+                    );
+                    const previewChange = isBookOwner
+                      ? (() => {
+                          const oldestPendingId = getOldestPendingChangeId(tpId);
+                          return contentChanges.find((c) => c.id === oldestPendingId) || null;
+                        })()
+                      : null;
+                    const previewStepJson = previewChange ? (previewChange as any).step_json : null;
 
                     return (
-                      <div key={tpId} className="border border-gray-200 rounded-lg p-6 bg-white">
+                      <div
+                        key={tpId}
+                        className="border border-gray-200 rounded-lg p-6 bg-white"
+                      >
                         <div className="flex items-center justify-between mb-4">
                           <div className="flex items-center gap-3">
                             <span className="text-sm font-semibold text-gray-700">
@@ -2014,10 +3131,16 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
                               {content ? `${content.replace(/<[^>]*>/g, '').length} chars` : "Empty"}
                             </span>
+                            {hasPendingChanges && (
+                              <span className="text-xs text-yellow-700 bg-yellow-100 px-2 py-1 rounded">
+                                Pending change
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-2">
                             <button
-                              onClick={() => {
+                              onClick={(event) => {
+                                event.stopPropagation();
                                 if (!isBookOwner && collaboratorRole !== "editor") return;
                                 handleOpenAssetsModal(tpId);
                               }}
@@ -2035,7 +3158,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               <span>Assets</span>
                             </button>
                             <button
-                              onClick={() => {
+                              onClick={(event) => {
+                                event.stopPropagation();
                                 if (!isBookOwner && collaboratorRole !== "editor") return;
                                 handleGenerateText(tpId, tp.text || `Talking Point ${ti + 1}`, selectedAssetIds);
                               }}
@@ -2072,8 +3196,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                         </div>
 
                         <div className="relative">
-                          <TiptapEditor
+                            <TiptapEditor
+                            key={`${tpId}-${canonicalContent?.length || 0}`}
                             content={content}
+                            canonicalContent={canonicalContent}
                             onUpdate={(html) => {
                               handleTpContentChange(tpId, html);
                             }}
@@ -2100,13 +3226,26 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             talkingPointId={tpId}
                             enableCollaboration={isCollaboration && (isBookOwner || collaboratorRole === "editor")}
                             isReadOnly={!isBookOwner && collaboratorRole !== "editor"}
+                              hasPendingChanges={hasPendingChanges}
+                              previewStepJson={previewStepJson}
+                              shadowSuggestions={shadowSuggestions}
+                              pendingHighlightStepJsons={pendingHighlightStepJsons}
+                              onPendingChangeClick={() => {
+                                if (!isBookOwner || !hasPendingChanges) return;
+                                setCurrentTalkingPointId(tpId);
+                                setFocusedChangeTpId(tpId);
+                                setActiveRightView("changes");
+                                const oldestPendingId = getOldestPendingChangeId(tpId);
+                                const changeToHighlight = contentChanges.find((c) => c.id === oldestPendingId);
+                                if (changeToHighlight) {
+                                  highlightChangeInEditor(changeToHighlight);
+                                }
+                              }}
                           />
                           {/* Suggest Edit Button - for editors only */}
                           {!isBookOwner && collaboratorRole === "editor" && (() => {
                             // FIX: Only show button if there are actual edits (content differs from original)
-                            const hasEdits = originalContents[tpId] !== undefined && 
-                                            tpContents[tpId] !== undefined &&
-                                            originalContents[tpId] !== tpContents[tpId];
+                            const hasEdits = !!hasUnsavedChanges[tpId];
                             // FIX: Get steps for this specific talking point only
                             const capturedStepsForTp = (window as any).__CAPTURED_STEPS_BY_TP__?.[tpId];
                             const hasCapturedSteps = capturedStepsForTp && capturedStepsForTp.length > 0;
@@ -2311,21 +3450,34 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               <div className="p-4 border-b border-[#2d3a4a] shrink-0">
                 <div className="flex items-center justify-between mb-1">
                   <h3 className="text-sm font-semibold text-white">CHANGES</h3>
-                  <button
-                    onClick={loadChanges}
-                    disabled={isLoadingChanges}
-                    className="p-1.5 rounded hover:bg-[#2d3a4a] disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Refresh changes"
-                  >
-                    <svg 
-                      className={`w-4 h-4 text-gray-400 ${isLoadingChanges ? 'animate-spin' : ''}`} 
-                      fill="none" 
-                      stroke="currentColor" 
-                      viewBox="0 0 24 24"
+                  <div className="flex items-center gap-2">
+                    {isBookOwner && focusedChangeTpId && (
+                      <button
+                        onClick={() => {
+                          setFocusedChangeTpId(null);
+                        }}
+                        className="text-xs text-gray-300 hover:text-white underline"
+                        title="Show all pending changes"
+                      >
+                        Show all
+                      </button>
+                    )}
+                    <button
+                      onClick={loadChanges}
+                      disabled={isLoadingChanges}
+                      className="p-1.5 rounded hover:bg-[#2d3a4a] disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Refresh changes"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                  </button>
+                      <svg
+                        className={`w-4 h-4 text-gray-400 ${isLoadingChanges ? 'animate-spin' : ''}`}
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
                 <p className="text-xs text-gray-400">
                   {isBookOwner ? "Review and approve changes" : "Your suggested changes"}
@@ -2344,6 +3496,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                   if (isBookOwner) {
                     // Owner sees all pending changes in the section
                     relevantChanges = contentChanges.filter(c => !c.status || c.status === "pending");
+                    if (focusedChangeTpId) {
+                      relevantChanges = relevantChanges.filter(c => c.talking_point === focusedChangeTpId);
+                    }
                     console.log("Owner view - showing all pending changes:", relevantChanges.length, "out of", contentChanges.length);
                   } else {
                     // Collaborator sees changes for current talking point
@@ -2377,13 +3532,30 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                   if (relevantChanges.length === 0) {
                     return (
                   <div className="text-center text-gray-400 text-sm py-4">
-                    {isBookOwner ? "No pending changes" : "No changes yet. Select text to suggest edits."}
+                    {isBookOwner
+                      ? (focusedChangeTpId ? "No pending changes for this talking point" : "No pending changes")
+                      : "No changes yet. Select text to suggest edits."}
                   </div>
                     );
                   }
                   
-                  return relevantChanges.map((change) => (
-                    <div key={change.id} className="bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg p-3">
+                  return relevantChanges.map((change) => {
+                    const oldestPendingId = isBookOwner ? getOldestPendingChangeId(change.talking_point) : null;
+                    const isOldestPending =
+                      !isBookOwner || change.status !== "pending" || change.id === oldestPendingId;
+                    return (
+                    <div
+                      key={change.id}
+                      className="bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg p-3 cursor-pointer"
+                      onClick={() => {
+                        setCurrentTalkingPointId(change.talking_point);
+                        if (isBookOwner) {
+                          setFocusedChangeTpId(change.talking_point);
+                        }
+                        highlightChangeInEditor(change);
+                      }}
+                      title="Click to highlight in editor"
+                    >
                       <div className="flex items-start justify-between mb-2">
                         <div className="flex-1">
                           <div className="text-white text-xs font-semibold mb-1">{change.user_name}</div>
@@ -2402,110 +3574,126 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                       
                       <div className="mt-3 space-y-2">
                         {(() => {
-                          // Extract text from step_json for display
                           const stepJson = (change as any).step_json;
                           if (!stepJson) {
                             return <div className="text-xs text-gray-400">No step data available</div>;
                           }
-                          
-                          // Helper to extract text from step JSON - shows only the edited portion
-                          // FIX: Simplified extraction - steps are complex, show summary instead of trying to extract exact text
-                          const extractTextFromStep = (step: any): string => {
-                            if (!step) return "";
+
+                          const preview = getChangePreviewText(change);
+                          const hasDeleted = preview.deleted.length > 0;
+                          const hasInserted = preview.inserted.length > 0;
+
+                          if (!isBookOwner) {
+                            const preview = getChangePreviewText(change);
+                            const hasDeleted = preview.deleted.length > 0;
+                            const hasInserted = preview.inserted.length > 0;
                             
-                            // ProseMirror ReplaceStep structure: { stepType: "replace", from, to, slice: { content: [...] } }
-                            if (step.stepType === "replace" || step.slice) {
-                              const extractFromNode = (node: any): string => {
-                                if (!node) return "";
-                                
-                                // Text node - return the text directly
-                                if (node.type === "text" && node.text) {
-                                  return node.text;
-                                }
-                                
-                                // Node with content array - recursively extract
-                                if (node.content && Array.isArray(node.content)) {
-                                  return node.content.map(extractFromNode).join("");
-                                }
-                                
-                                return "";
-                              };
-                              
-                              // Extract from slice.content array - this is what was INSERTED
-                              if (step.slice?.content && Array.isArray(step.slice.content)) {
-                                const insertedText = step.slice.content.map(extractFromNode).join("");
-                                // Only return inserted text (not deleted text)
-                                if (insertedText.trim().length > 0) {
-                                  return insertedText;
-                                }
-                              }
-                              
-                              return "";
+                            console.log(`[ChangesTab] Rendering change ${change.id}: hasDeleted=${hasDeleted}, hasInserted=${hasInserted}`);
+                            console.log(`[ChangesTab] preview.deleted="${preview.deleted.substring(0, 50)}..."`);
+                            console.log(`[ChangesTab] preview.inserted="${preview.inserted.substring(0, 50)}..."`);
+                            console.log(`[ChangesTab] Raw step_json:`, (change as any).step_json);
+
+                            if (!hasDeleted && !hasInserted) {
+                              return (
+                                <div>
+                                  <div className="text-xs text-gray-400 mb-2 font-medium">SUGGESTED CHANGE:</div>
+                                  <div className="bg-gray-500/10 border border-gray-500/30 rounded p-3">
+                                    <p className="text-xs text-gray-400">
+                                      Preview unavailable
+                                    </p>
+                                  </div>
+                                </div>
+                              );
                             }
-                            
-                            // Skip formatting-only changes
-                            if (step.stepType === "addMark" || step.stepType === "removeMark") {
-                              return "";
-                            }
-                            
-                            return "";
-                          };
-                          
-                          // Handle both single step and array of steps
-                          const steps = Array.isArray(stepJson) ? stepJson : [stepJson];
-                          
-                          // Extract ONLY inserted text from steps (not deleted text)
-                          const insertedTexts: string[] = [];
-                          steps.forEach((step: any) => {
-                            const text = extractTextFromStep(step);
-                            // Only include non-empty text that doesn't look like position markers
-                            if (text && text.trim().length > 0 && !text.match(/^\[Edit/)) {
-                              insertedTexts.push(text);
-                            }
-                          });
-                          
-                          // Combine inserted text (steps are in order, so join directly)
-                          const combinedText = insertedTexts.join("").trim();
-                          
-                          // Show the FULL inserted text (not truncated) if we have meaningful text
-                          if (combinedText && combinedText.length > 0) {
+
                             return (
                               <div>
                                 <div className="text-xs text-gray-400 mb-2 font-medium">SUGGESTED CHANGE:</div>
-                                <div className="bg-green-500/10 border border-green-500/30 rounded p-3 max-h-48 overflow-y-auto">
-                                  <p className="text-sm text-green-300 whitespace-pre-wrap" style={{ wordBreak: 'break-word' }}>
-                                    {combinedText}
+                                <div className="space-y-2">
+                                  {hasDeleted && (
+                                    <div className="bg-red-500/10 border border-red-500/30 rounded p-3">
+                                      <div className="text-xs text-red-400 mb-1 font-semibold">Deleted</div>
+                                      <p
+                                        className="text-sm text-red-300 whitespace-pre-wrap line-through pending-step-deletion"
+                                        style={{ wordBreak: "break-word" }}
+                                      >
+                                        {preview.deleted}
+                                      </p>
+                                    </div>
+                                  )}
+                                  {hasInserted && (
+                                    <div className="bg-yellow-500/10 border border-yellow-500/30 rounded p-3">
+                                      <div className="text-xs text-yellow-400 mb-1 font-semibold">Inserted</div>
+                                      <p
+                                        className="text-sm text-yellow-200 whitespace-pre-wrap pending-step-highlight"
+                                        style={{ wordBreak: "break-word" }}
+                                      >
+                                        {preview.inserted}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          const previewHtml = getChangePreviewHtml(change);
+                          if (previewHtml) {
+                            return (
+                              <div>
+                                <div className="text-xs text-gray-400 mb-2 font-medium">SUGGESTED CHANGE:</div>
+                                <div
+                                  className="text-sm text-gray-200 whitespace-pre-wrap"
+                                  style={{ wordBreak: "break-word" }}
+                                  dangerouslySetInnerHTML={{ __html: previewHtml }}
+                                />
+                              </div>
+                            );
+                          }
+
+                          if (!hasDeleted && !hasInserted) {
+                            const steps = Array.isArray(stepJson) ? stepJson : [stepJson];
+                            return (
+                              <div>
+                                <div className="text-xs text-gray-400 mb-2 font-medium">SUGGESTED CHANGE:</div>
+                                <div className="bg-gray-500/10 border border-gray-500/30 rounded p-3">
+                                  <p className="text-xs text-gray-400">
+                                    {steps.length > 1 ? "Preview unavailable" : "Preview unavailable"}
                                   </p>
                                 </div>
-                                {steps.length > 1 && (
-                                  <div className="text-xs text-gray-500 mt-1">
-                                    ({steps.length} steps applied)
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div>
+                              <div className="text-xs text-gray-400 mb-2 font-medium">SUGGESTED CHANGE:</div>
+                              <div className="space-y-2">
+                                {hasDeleted && (
+                                  <div className="bg-red-500/10 border border-red-500/30 rounded p-3">
+                                    <div className="text-xs text-red-400 mb-1 font-semibold">Deleted</div>
+                                    <p
+                                      className="text-sm text-red-300 whitespace-pre-wrap line-through"
+                                      style={{ wordBreak: "break-word" }}
+                                    >
+                                      {preview.deleted}
+                                    </p>
+                                  </div>
+                                )}
+                                {hasInserted && (
+                                  <div className="bg-green-500/10 border border-green-500/30 rounded p-3">
+                                    <div className="text-xs text-green-400 mb-1 font-semibold">Inserted</div>
+                                    <p
+                                      className="text-sm text-green-300 whitespace-pre-wrap"
+                                      style={{ wordBreak: "break-word" }}
+                                    >
+                                      {preview.inserted}
+                                    </p>
                                   </div>
                                 )}
                               </div>
-                            );
-                          }
-                          
-                          // If no text extracted but we have steps, show generic message with step details
-                          if (steps.length > 0) {
-                            // Try to show step positions if available
-                            const stepInfo = steps.map((step: any, idx: number) => {
-                              if (step.from !== undefined && step.to !== undefined) {
-                                return `Step ${idx + 1}: position ${step.from}-${step.to}`;
-                              }
-                              return `Step ${idx + 1}: ${step.stepType || 'unknown'}`;
-                            }).join(', ');
-                            
-                            return (
-                              <div>
-                                <div className="text-xs text-gray-400 mb-1">Step-based change ({steps.length} step{steps.length !== 1 ? 's' : ''})</div>
-                                <div className="text-xs text-gray-500">{stepInfo}</div>
-                                <div className="text-xs text-gray-400 mt-1 italic">View in editor to see changes</div>
-                              </div>
-                            );
-                          }
-                          
-                          return <div className="text-xs text-gray-400">No step data available</div>;
+                            </div>
+                          );
                         })()}
                       </div>
 
@@ -2513,7 +3701,13 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                         <div className="flex gap-2 mt-3">
                           <button
                             onClick={() => handleApproveChange(change)}
-                            className="flex-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
+                            disabled={!isOldestPending}
+                            className={`flex-1 px-3 py-1.5 rounded text-sm ${
+                              !isOldestPending
+                                ? "bg-gray-500 text-gray-300 cursor-not-allowed"
+                                : "bg-green-600 text-white hover:bg-green-700"
+                            }`}
+                            title={!isOldestPending ? "Approve earlier changes first" : "Approve"}
                           >
                             Approve
                           </button>
@@ -2534,6 +3728,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           </button>
                         </div>
                       )}
+                      {isBookOwner && change.status === "pending" && !isOldestPending && (
+                        <div className="text-xs text-gray-400 mt-2">
+                          Approve earlier change(s) for this talking point first.
+                        </div>
+                      )}
                       
                       {!isBookOwner && change.status === "pending" && change.user === (window as any).currentUserId && (
                         <button
@@ -2552,7 +3751,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                         </button>
                       )}
                     </div>
-                  ));
+                  );
+                  });
                 })()}
               </div>
             </div>

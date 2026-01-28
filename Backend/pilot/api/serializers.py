@@ -11,20 +11,40 @@ class TalkingPointSerializer(serializers.ModelSerializer):
 class CommentSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     user_email = serializers.CharField(source="user.email", read_only=True, default="")
+    replies = serializers.SerializerMethodField()
+    parent = serializers.PrimaryKeyRelatedField(read_only=True)
+    parent_user_name = serializers.SerializerMethodField()
     
     def get_user_name(self, obj):
         if obj.user:
             return obj.user.first_name or obj.user.username or obj.user.email.split("@")[0]
         return "Unknown User"
     
+    def get_parent_user_name(self, obj):
+        if obj.parent and obj.parent.user:
+            return obj.parent.user.first_name or obj.parent.user.username or obj.parent.user.email.split("@")[0]
+        elif obj.parent and obj.parent.comment_type == "ai":
+            return "AI Coach Review"
+        return None
+    
+    def get_replies(self, obj):
+        # Get replies ordered by created_at (oldest first)
+        replies = obj.replies.all().order_by("created_at")
+        return CommentSerializer(replies, many=True).data
+    
     class Meta:
         model = Comment
-        fields = ["id", "talking_point", "user", "user_name", "user_email", "text", "comment_type", "suggested_replacement", "created_at", "updated_at"]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        fields = ["id", "talking_point", "user", "user_name", "user_email", "text", "comment_type", "suggested_replacement", "parent", "parent_user_name", "replies", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at", "replies", "parent_user_name"]
 
 # Section Serializer with nested talking points
 class SectionSerializer(serializers.ModelSerializer):
-    talking_points = TalkingPointSerializer(many=True, read_only=True)
+    talking_points = serializers.SerializerMethodField()
+
+    def get_talking_points(self, obj):
+        # Ensure talking points are ordered by the 'order' field
+        tps = obj.talking_points.all().order_by('order')
+        return TalkingPointSerializer(tps, many=True).data
 
     class Meta:
         model = Section
@@ -70,4 +90,4 @@ class BookSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Book
-        fields = ["id", "title", "chapters", "core_topic", "audience"]
+        fields = ["id", "title", "chapters", "core_topic", "audience", "audience_tag"]

@@ -15,15 +15,45 @@ User = get_user_model()
 load_dotenv()
 
 def exchange_code_for_tokens(code):
+    client_id = os.getenv("CLIENT_ID")
+    client_secret = os.getenv("CLIENT_SECRET")
+    
+    # Check if environment variables are set
+    if not client_id:
+        print("ERROR: CLIENT_ID environment variable is not set")
+        raise ValueError("CLIENT_ID environment variable is not set. Please add it to your .env file.")
+    
+    if not client_secret:
+        print("ERROR: CLIENT_SECRET environment variable is not set")
+        raise ValueError("CLIENT_SECRET environment variable is not set. Please add it to your .env file.")
+    
+    # Log that we have the credentials (but don't log the actual values)
+    print(f"Using CLIENT_ID: {client_id[:10]}... (first 10 chars)")
+    
     data = {
         "code": code,
-        "client_id": os.getenv("CLIENT_ID"),
-        "client_secret": os.getenv("CLIENT_SECRET"),
+        "client_id": client_id,
+        "client_secret": client_secret,
         "grant_type": "authorization_code",
         "redirect_uri": "postmessage"
     }
 
     r = http.post("https://oauth2.googleapis.com/token", data=data)
+    
+    # Check if the request was successful
+    if r.status_code != 200:
+        error_detail = r.text
+        print(f"Google OAuth token exchange failed: {r.status_code} - {error_detail}")
+        
+        # Provide more helpful error messages
+        if "invalid_client" in error_detail:
+            raise ValueError(
+                "Invalid Google OAuth client credentials. "
+                "Please verify that CLIENT_ID and CLIENT_SECRET in your .env file match "
+                "the credentials from Google Cloud Console."
+            )
+        raise ValueError(f"Failed to exchange auth code: {error_detail}")
+    
     return r.json()
 
 
@@ -31,15 +61,23 @@ def exchange_code_for_tokens(code):
 @permission_classes([AllowAny])
 def google_login(request):
 
-    code = request.data.get("code")  # <-- FIXED
+    code = request.data.get("code")
     if not code:
         return Response({"error": "No auth code provided"}, status=400)
 
-    # Exchange the auth code for access + ID tokens
-    tokens = exchange_code_for_tokens(code)
+    try:
+        # Exchange the auth code for access + ID tokens
+        tokens = exchange_code_for_tokens(code)
+    except ValueError as e:
+        print(f"Token exchange error: {e}")
+        return Response({"error": str(e)}, status=400)
+    except Exception as e:
+        print(f"Unexpected error during token exchange: {e}")
+        return Response({"error": "Failed to exchange auth code"}, status=400)
 
     if "id_token" not in tokens:
-        return Response({"error": "Failed to exchange auth code"}, status=400)
+        print(f"Missing id_token in response: {tokens}")
+        return Response({"error": "Failed to exchange auth code - no id_token received"}, status=400)
 
     id_token_jwt = tokens["id_token"]
 

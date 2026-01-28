@@ -79,6 +79,36 @@
   height: 0;
 }
 
+/* Inline highlight for pending change focus */
+.pending-step-deletion {
+  background-color: #fee2e2 !important;
+  text-decoration: line-through !important;
+  color: #dc2626 !important;
+  padding: 2px 4px !important;
+  border-radius: 2px !important;
+}
+
+.pending-step-insertion {
+  background-color: #dcfce7 !important;
+  color: #16a34a !important;
+  padding: 2px 4px !important;
+  border-left: 2px solid #22c55e !important;
+  border-radius: 2px !important;
+  margin-left: 2px !important;
+  display: inline !important;
+}
+
+.pending-step-insertion * {
+  background-color: #dcfce7 !important;
+  color: #16a34a !important;
+}
+
+.pending-step-highlight {
+  background-color: #fef08a !important;
+  color: #92400e !important;
+  border-radius: 2px !important;
+}
+
 /* Styles for pending changes in the editor */
 .ProseMirror .change-indicator.deletion,
 .ProseMirror [data-change-type="deletion"] {
@@ -115,4 +145,59 @@
   border-left: 2px solid #22c55e !important;
   border-radius: 2px !important;
   margin-left: 4px !important;
+}
+/* Collaborator pending highlight (generic) */
+.collaborator-pending-highlight {
+  background-color: rgba(255, 255, 0, 0.3) !important;
+  border: 1px dashed #ffcc00 !important;
+}
+
+/* Collaborator preview highlights - yellow theme */
+.collaborator-pending-deletion {
+  text-decoration: line-through !important;
+  background-color: rgba(255, 200, 0, 0.3) !important;
+  color: #92400e !important;
+}
+
+.collaborator-pending-insertion {
+  background-color: rgba(255, 230, 0, 0.3) !important;
+  color: #92400e !important;
+  display: inline !important;
+  white-space: pre !important;
+  letter-spacing: normal !important;
+  word-spacing: normal !important;
+  padding: 1px 2px !important;
+  border-radius: 2px !important;
+  margin: 0 1px !important;
+}
+
+/* Owner preview highlights - red/green theme */
+.owner-pending-deletion {
+  text-decoration: line-through !important;
+  background-color: rgba(255, 0, 0, 0.2) !important;
+  color: #666 !important;
+}
+
+.owner-pending-insertion {
+  background-color: rgba(0, 255, 0, 0.2) !important;
+  border-left: 2px solid #00cc00 !important;
+  display: inline !important;
+  white-space: pre !important;
+  letter-spacing: normal !important;
+  word-spacing: normal !important;
+}
+
+/* Changes tab preview styles */
+.pending-step-deletion {
+  text-decoration: line-through;
+  background-color: rgba(255, 0, 0, 0.1);
+  color: #666;
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+
+.pending-step-insertion {
+  background-color: rgba(0, 255, 0, 0.1);
+  padding: 2px 4px;
+  border-radius: 2px;
 }

@@ -1,5 +1,5 @@
 import { Extension } from '@tiptap/core';
-import { collab } from 'prosemirror-collab';
+import { collab, receiveTransaction } from 'prosemirror-collab';
 import { Plugin, PluginKey } from 'prosemirror-state';
 import { Step } from 'prosemirror-transform';
 
@@ -58,15 +58,10 @@ export const CollaborationExtension = Extension.create<CollaborationOptions>({
                 if (data.steps && data.steps.length > 0) {
                   const schema = editorView.state.schema;
 
-                  // Deserialize and apply steps
+                  // Deserialize steps and apply via receiveTransaction to avoid freezing
                   const steps = data.steps.map((stepJson: any) => Step.fromJSON(schema, stepJson));
-                  
-                  // Apply steps directly to the editor view
-                  const tr = editorView.state.tr;
-                  steps.forEach((step: any) => {
-                    tr.step(step);
-                  });
-                  
+                  const clientIDs = Array.isArray(data.clientIDs) ? data.clientIDs : steps.map(() => "remote");
+                  const tr = receiveTransaction(editorView.state, steps, clientIDs);
                   editorView.dispatch(tr);
                   lastVersion = data.version;
 

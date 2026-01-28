@@ -4,6 +4,7 @@ import type { Transaction, EditorState } from "prosemirror-state";
 
 export interface StepCaptureOptions {
   talkingPointId?: number;
+  captureOnly?: boolean;
 }
 
 /**
@@ -21,12 +22,14 @@ export const StepCaptureExtension = Extension.create<StepCaptureOptions>({
   addOptions() {
     return {
       talkingPointId: undefined,
+      captureOnly: false,
     };
   },
 
   addProseMirrorPlugins() {
     const extension = this;
     const talkingPointId = extension.options.talkingPointId;
+    const captureOnly = extension.options.captureOnly === true;
     
     if (!talkingPointId) {
       // No talking point ID - don't capture steps
@@ -37,6 +40,8 @@ export const StepCaptureExtension = Extension.create<StepCaptureOptions>({
       new Plugin({
         appendTransaction(transactions: readonly Transaction[], oldState: EditorState, newState: EditorState) {
           const steps: any[] = [];
+          const inverseSteps: any[] = [];
+          let workingDoc = oldState.doc;
 
           transactions.forEach((tr: Transaction) => {
             if (!tr.docChanged) return;
@@ -47,13 +52,23 @@ export const StepCaptureExtension = Extension.create<StepCaptureOptions>({
             // 2. Editor instance flag
             // 3. If transaction replaces entire document (typical of setContent)
             const editor = (newState as any).editorView?.state?.editorView?.dom?.closest?.('.ProseMirror')?.__tiptapEditor;
-            const isProgrammaticUpdate = 
+            const replacesWholeDoc = tr.steps.some((step: any) => {
+              const from = typeof step?.from === "number" ? step.from : null;
+              const to = typeof step?.to === "number" ? step.to : null;
+              if (from === null || to === null) return false;
+              return from === 0 && to >= oldState.doc.content.size - 1;
+            });
+            const isProgrammaticUpdate =
               tr.getMeta('preventCapture') === true ||
+              tr.getMeta('setContent') === true ||
+              tr.getMeta('isProgrammatic') === true ||
+              tr.getMeta('addToHistory') === false ||
               // Check if editor instance has flag set
               (editor && (editor as any).__isProgrammaticUpdate === true) ||
               // Check if this transaction replaces the entire document (setContent pattern)
-              (oldState.doc.content.size > 0 && 
-               Math.abs(newState.doc.content.size - oldState.doc.content.size) > oldState.doc.content.size * 0.8);
+              replacesWholeDoc ||
+              (oldState.doc.content.size > 0 &&
+                Math.abs(newState.doc.content.size - oldState.doc.content.size) > oldState.doc.content.size * 0.8);
             
             if (isProgrammaticUpdate) {
               return; // Skip capturing steps from programmatic updates
@@ -69,6 +84,15 @@ export const StepCaptureExtension = Extension.create<StepCaptureOptions>({
               try {
                 const stepJson = step.toJSON();
                 steps.push(stepJson);
+
+                if (captureOnly) {
+                  const inverse = step.invert(workingDoc);
+                  inverseSteps.unshift(inverse);
+                  const applied = step.apply(workingDoc);
+                  if (applied.doc) {
+                    workingDoc = applied.doc;
+                  }
+                }
               } catch (error) {
                 console.error("Error serializing step:", error);
               }
@@ -90,6 +114,18 @@ export const StepCaptureExtension = Extension.create<StepCaptureOptions>({
               ...(window as any).__CAPTURED_STEPS_BY_TP__[talkingPointId],
               ...steps
             ];
+          }
+
+          if (captureOnly && inverseSteps.length > 0) {
+            let revertTr = newState.tr;
+            inverseSteps.forEach((inv: any) => {
+              const mapped = inv.map(revertTr.mapping);
+              if (mapped) {
+                revertTr = revertTr.step(mapped);
+              }
+            });
+            revertTr.setMeta("preventCapture", true);
+            return revertTr;
           }
 
           return null; // Don't modify the transaction
