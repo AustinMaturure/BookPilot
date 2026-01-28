@@ -284,7 +284,16 @@ export default function ChapterAssetsPanel({
 
       {/* Generate Button */}
       <div className="px-6 py-4 border-t border-[#2d3a4a] shrink-0">
-        
+        <button
+          onClick={handleGenerate}
+          disabled={selectedAssetIds.size === 0}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-[#CDF056] text-[#0a1a2e] rounded-lg font-semibold hover:bg-[#b8d84a] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          Generate
+        </button>
       </div>
     </div>
   );
