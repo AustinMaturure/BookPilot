@@ -5,7 +5,6 @@ import {
   getPillars,
   getPillarChat,
   sendPillarMessage,
-  markPillarComplete,
   resetPillar,
   getPositioningBrief,
   createOutline,
@@ -48,18 +47,6 @@ const PILLAR_ICONS: Record<string, string> = {
   the_authority: "",
 };
 
-// Pillar color mapping (for visual distinction)
-const PILLAR_COLORS: Record<string, string> = {
-  business_core: "#3B82F6", // blue
-  target_reader: "#8B5CF6", // purple
-  emotional_resonance: "#EC4899", // pink
-  book_goal: "#F59E0B", // amber
-  pain_points: "#EF4444", // red
-  the_shift: "#10B981", // green
-  the_edge: "#6366F1", // indigo
-  the_foundation: "#14B8A6", // teal
-  the_authority: "#F97316", // orange
-};
 
 export default function Position({
   initialOutline = null,
@@ -368,16 +355,6 @@ export default function Position({
     }
   };
 
-  const handleMarkComplete = async () => {
-    if (!activePillar) return;
-
-    const result = await markPillarComplete(activePillar.id);
-    if (result.success) {
-      await refreshPillars();
-    } else {
-      setError(result.error || "Could not mark pillar as complete. Need more depth.");
-    }
-  };
 
   const handleResetPillar = async () => {
     if (!activePillar) return;

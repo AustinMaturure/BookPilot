@@ -114,10 +114,6 @@ export default function ChapterAssetsPanel({
     });
   };
 
-  const handleGenerate = () => {
-    onGenerate(Array.from(selectedAssetIds));
-    onClose();
-  };
 
   const handleDeleteAsset = async (assetId: number, e: React.MouseEvent) => {
     e.stopPropagation();
