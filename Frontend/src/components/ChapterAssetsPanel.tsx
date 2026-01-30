@@ -14,7 +14,6 @@ type ChapterAssetsPanelProps = {
   bookId: number;
   chapterId: number;
   chapterTitle: string;
-  onGenerate: (selectedAssetIds: number[]) => void;
 };
 
 export default function ChapterAssetsPanel({
@@ -23,7 +22,6 @@ export default function ChapterAssetsPanel({
   bookId,
   chapterId,
   chapterTitle: _chapterTitle,
-  onGenerate,
 }: ChapterAssetsPanelProps) {
   const [assets, setAssets] = useState<ChapterAsset[]>([]);
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(new Set());
