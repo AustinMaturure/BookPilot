@@ -989,6 +989,57 @@ export async function resetPillar(pillar_id: number) {
   }
 }
 
+// Pillar Assets API
+export type PillarAsset = {
+  id: number;
+  filename: string;
+  file_type: string;
+  created_at: string;
+};
+
+export async function uploadPillarAsset(pillar_id: number, file: File) {
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    
+    const response = await api.post(`pilot/api/pillars/${pillar_id}/assets/upload/`, formData, {
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+    });
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function listPillarAssets(pillar_id: number) {
+  try {
+    const response = await api.get(`pilot/api/pillars/${pillar_id}/assets/`);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function deletePillarAsset(asset_id: number) {
+  try {
+    const response = await api.delete(`pilot/api/pillars/assets/${asset_id}/delete/`);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
 /**
  * Get the Master Positioning Brief (only available when all pillars complete).
  */
