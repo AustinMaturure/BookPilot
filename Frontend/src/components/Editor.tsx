@@ -10,7 +10,7 @@ import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import Highlight from "@tiptap/extension-highlight";
 import type { BookOutline } from "./position";
-import { updateTalkingPoint, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, updateContentChangeStepJson, getCollaborationState, createTalkingPoint, createSection, type CommentType, type Collaborator, type ContentChange } from "../utils/api";
+import { updateTalkingPoint, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, updateContentChangeStepJson, getCollaborationState, createTalkingPoint, createSection, reviewChapter, getChapterComments, getGlossaryTerms, createGlossaryTerm, deleteGlossaryTerm, updateSpellingConvention, type CommentType, type Collaborator, type ContentChange, type GlossaryTerm } from "../utils/api";
 import ChapterAssetsModal from "./ChapterAssetsModal";
 import ChapterAssetsPanel from "./ChapterAssetsPanel";
 import { CollaborationExtension } from "./CollaborationExtension";
@@ -1044,7 +1044,15 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [currentTalkingPointId, setCurrentTalkingPointId] = useState<number | null>(null);
   const [currentChapterId, setCurrentChapterId] = useState<number | null>(null);
   const [selectedAssetIds, setSelectedAssetIds] = useState<number[]>([]);
-  const [activeRightView, setActiveRightView] = useState<"comments" | "chat" | "changes" | "moreActions">("comments");
+  const [activeRightView, setActiveRightView] = useState<"comments" | "chat" | "changes" | "moreActions" | "review" | "glossary">("comments");
+  const [isReviewing, setIsReviewing] = useState(false);
+  const [reviewResult, setReviewResult] = useState<{ review_items_found: number; comments_created: number; comments: Array<{ id: number; talking_point_id: number; category: string }> } | null>(null);
+  const [chapterComments, setChapterComments] = useState<Array<CommentType & { talking_point_id: number; talking_point_text: string; section_title: string }>>([]);
+  // Glossary state
+  const [glossaryTerms, setGlossaryTerms] = useState<GlossaryTerm[]>([]);
+  const [isLoadingGlossary, setIsLoadingGlossary] = useState(false);
+  const [newTermInput, setNewTermInput] = useState("");
+  const [spellingConvention, setSpellingConvention] = useState<"us" | "uk" | "auto">("auto");
   const [selectedText, setSelectedText] = useState<string>("");
   const [selectionPosition, setSelectionPosition] = useState<{ x: number; y: number } | null>(null);
   const [selectionRange, setSelectionRange] = useState<{ from: number; to: number } | null>(null);
@@ -1468,6 +1476,49 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     };
     loadComments();
   }, [currentTalkingPointId, selectedSection, bookId]);
+
+  // Load chapter comments when review tab is opened
+  useEffect(() => {
+    const loadChapterComments = async () => {
+      if (activeRightView === "review" && selectedItem && bookId) {
+        try {
+          const result = await getChapterComments(selectedItem.chapterId);
+          if (result.success && result.data) {
+            setChapterComments(result.data);
+          }
+        } catch (error) {
+          console.error("Error loading chapter comments:", error);
+        }
+      }
+    };
+    loadChapterComments();
+  }, [activeRightView, selectedItem, bookId]);
+
+  // Load glossary terms when glossary tab is opened
+  useEffect(() => {
+    const loadGlossary = async () => {
+      if (activeRightView === "glossary" && bookId) {
+        setIsLoadingGlossary(true);
+        try {
+          const result = await getGlossaryTerms(bookId);
+          if (result.success && result.data) {
+            setGlossaryTerms(result.data);
+          }
+        } catch (error) {
+          console.error("Error loading glossary:", error);
+        } finally {
+          setIsLoadingGlossary(false);
+        }
+      }
+    };
+    loadGlossary();
+  }, [activeRightView, bookId]);
+
+  // Clear review results when chapter changes
+  useEffect(() => {
+    setReviewResult(null);
+    setChapterComments([]);
+  }, [selectedItem?.chapterId]);
 
   // Function to load changes (reusable for refresh)
   // For owners: Load changes for ALL talking points in the section
@@ -2578,10 +2629,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
           <div className="flex items-start gap-2 mb-2">
             <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${comment.comment_type === "ai"
-                ? "bg-[#CDF056]/20"
-                : comment.comment_type === "collaborator"
-                  ? "bg-blue-500/20"
-                  : "bg-gray-200"
+              ? "bg-[#CDF056]/20"
+              : comment.comment_type === "collaborator"
+                ? "bg-blue-500/20"
+                : "bg-gray-200"
               }`}>
               {comment.comment_type === "ai" ? (
                 <svg className="w-4 h-4 text-[#CDF056]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3015,8 +3066,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                         }}
                         disabled={!isBookOwner && collaboratorRole !== "editor"}
                         className={`px-2 py-2 rounded transition-colors ${!isBookOwner && collaboratorRole !== "editor"
-                            ? "text-gray-600 opacity-50 cursor-not-allowed"
-                            : "text-gray-400 hover:text-white hover:bg-[#011b2d]/50"
+                          ? "text-gray-600 opacity-50 cursor-not-allowed"
+                          : "text-gray-400 hover:text-white hover:bg-[#011b2d]/50"
                           }`}
                         title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can access assets" : "Chapter Assets"}
                       >
@@ -3138,8 +3189,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               }}
                               disabled={!isBookOwner && collaboratorRole !== "editor"}
                               className={`px-3 py-1.5 text-sm border rounded-lg flex items-center gap-2 ${!isBookOwner && collaboratorRole !== "editor"
-                                  ? "border-gray-200 text-gray-400 bg-gray-50 cursor-not-allowed opacity-50"
-                                  : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                                ? "border-gray-200 text-gray-400 bg-gray-50 cursor-not-allowed opacity-50"
+                                : "border-gray-300 text-gray-700 hover:bg-gray-50"
                                 }`}
                               title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can access assets" : "Add files for context"}
                             >
@@ -3156,8 +3207,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               }}
                               disabled={isGenerating || !tp.text || (!isBookOwner && collaboratorRole !== "editor")}
                               className={`px-3 py-1.5 text-sm rounded-lg flex items-center gap-2 ${!isBookOwner && collaboratorRole !== "editor"
-                                  ? "bg-gray-300 text-gray-500 cursor-not-allowed opacity-50"
-                                  : "bg-[#CDF056] text-white hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed"
+                                ? "bg-gray-300 text-gray-500 cursor-not-allowed opacity-50"
+                                : "bg-[#CDF056] text-white hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed"
                                 }`}
                               title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can generate text" : "Generate Text"}
                             >
@@ -3425,13 +3476,17 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               <div className="flex-1 overflow-y-auto p-4">
                 {isLoadingComments ? (
                   <div className="text-center text-gray-400 text-sm py-4">Loading comments...</div>
-                ) : comments.length === 0 ? (
-                  <div className="text-center text-gray-400 text-sm py-4">No comments yet. Be the first to comment!</div>
-                ) : (
-                  <div className="space-y-3">
-                    {comments.map((comment) => renderComment(comment))}
-                  </div>
-                )}
+                ) : (() => {
+                  // Filter out AI comments - they should only appear in the Review tab
+                  const userComments = comments.filter(comment => comment.comment_type !== "ai");
+                  return userComments.length === 0 ? (
+                    <div className="text-center text-gray-400 text-sm py-4">No comments yet. Be the first to comment!</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {userComments.map((comment) => renderComment(comment))}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           ) : activeRightView === "changes" ? (
@@ -3553,8 +3608,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               {new Date(change.created_at).toLocaleDateString()} {new Date(change.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </div>
                             <div className={`inline-block px-2 py-0.5 rounded text-xs mt-1 ${change.status === "pending" ? "bg-yellow-500/20 text-yellow-400" :
-                                change.status === "approved" ? "bg-green-500/20 text-green-400" :
-                                  "bg-red-500/20 text-red-400"
+                              change.status === "approved" ? "bg-green-500/20 text-green-400" :
+                                "bg-red-500/20 text-red-400"
                               }`}>
                               {change.status.toUpperCase()}
                             </div>
@@ -3692,8 +3747,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               onClick={() => handleApproveChange(change)}
                               disabled={!isOldestPending}
                               className={`flex-1 px-3 py-1.5 rounded text-sm ${!isOldestPending
-                                  ? "bg-gray-500 text-gray-300 cursor-not-allowed"
-                                  : "bg-green-600 text-white hover:bg-green-700"
+                                ? "bg-gray-500 text-gray-300 cursor-not-allowed"
+                                : "bg-green-600 text-white hover:bg-green-700"
                                 }`}
                               title={!isOldestPending ? "Approve earlier changes first" : "Approve"}
                             >
@@ -3772,8 +3827,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     >
                       <div
                         className={`max-w-[80%] rounded-lg p-3 text-sm ${msg.from === "user"
-                            ? "bg-[#CDF056] text-white"
-                            : "bg-white text-gray-900"
+                          ? "bg-[#CDF056] text-white"
+                          : "bg-white text-gray-900"
                           }`}
                       >
                         {msg.highlightedText && (
@@ -3843,6 +3898,397 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                   </svg>
                   Apply Changes to Content
                 </button>
+              </div>
+            </div>
+          ) : activeRightView === "review" ? (
+            <div className="flex flex-col h-full">
+              {/* Review Header */}
+              <div className="p-4 border-b border-[#2d3a4a] shrink-0">
+                <h3 className="text-sm font-semibold text-white mb-1">AI COACH REVIEW</h3>
+                <p className="text-xs text-gray-400">
+                  Review the entire chapter for clarity, flow, tone, and more
+                </p>
+              </div>
+
+              {/* Review Content */}
+              <div className="flex-1 overflow-y-auto p-4">
+                {!selectedItem ? (
+                  <div className="text-center text-gray-400 text-sm py-8">
+                    Select a section to review its chapter
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {!reviewResult && !isReviewing && (
+                      <div className="bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg p-4">
+                        <p className="text-sm text-gray-300 mb-4">
+                          Get AI-powered feedback on your chapter covering:
+                        </p>
+                        <ul className="text-xs text-gray-400 space-y-2 mb-4 list-disc list-inside">
+                          <li>Clarity & Meaning</li>
+                          <li>Flow & Readability</li>
+                          <li>Argumentation & Consistency</li>
+                          <li>Tone of Voice</li>
+                          <li>Proofreading</li>
+                          <li>Credibility & Sources</li>
+                        </ul>
+                        <button
+                          onClick={async () => {
+                            if (!selectedItem || !bookId) return;
+                            setIsReviewing(true);
+                            setReviewResult(null);
+                            setChapterComments([]);
+                            try {
+                              const result = await reviewChapter(selectedItem.chapterId);
+                              if (result.success && result.data) {
+                                setReviewResult(result.data);
+                                // Load chapter comments to display in this tab
+                                const chapterCommentsResult = await getChapterComments(selectedItem.chapterId);
+                                if (chapterCommentsResult.success && chapterCommentsResult.data) {
+                                  setChapterComments(chapterCommentsResult.data);
+                                }
+                              } else {
+                                alert(result.error || "Failed to review chapter");
+                              }
+                            } catch (error) {
+                              console.error("Error reviewing chapter:", error);
+                              alert("Error reviewing chapter. Please try again.");
+                            } finally {
+                              setIsReviewing(false);
+                            }
+                          }}
+                          disabled={isReviewing}
+                          className="w-full px-4 py-2 bg-[#CDF056] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold"
+                        >
+                          {isReviewing ? (
+                            <span className="flex items-center justify-center gap-2">
+                              <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                              </svg>
+                              Reviewing...
+                            </span>
+                          ) : (
+                            "Review Chapter"
+                          )}
+                        </button>
+                      </div>
+                    )}
+
+                    {isReviewing && (
+                      <div className="text-center py-8">
+                        <div className="flex flex-col items-center gap-3">
+                          <svg className="animate-spin h-8 w-8 text-[#CDF056]" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          <p className="text-sm text-gray-400">Analyzing your chapter...</p>
+                          <p className="text-xs text-gray-500">This may take a moment</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {reviewResult && (
+                      <div className="bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg p-4 mb-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-sm font-semibold text-white">Review Complete</h4>
+                          <button
+                            onClick={() => {
+                              setReviewResult(null);
+                              setChapterComments([]);
+                            }}
+                            className="text-xs text-gray-400 hover:text-white"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                        <div className="space-y-2 text-sm">
+                          <div className="text-gray-300">
+                            <span className="font-semibold">{reviewResult.review_items_found}</span> issues found
+                          </div>
+                          <div className="text-gray-300">
+                            <span className="font-semibold">{reviewResult.comments_created}</span> comments created
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Display AI Review Comments */}
+                    {chapterComments.filter(c => c.comment_type === "ai").length > 0 && (
+                      <div className="space-y-3">
+                        <h4 className="text-sm font-semibold text-white mb-2">Review Suggestions</h4>
+                        {chapterComments
+                          .filter(c => c.comment_type === "ai")
+                          .map((comment) => {
+                            // Parse the comment text (format: Category\n\nAnchor\n\nComment: ...\n\nOptions: ...\n\nGlossary: ...)
+                            const parts = comment.text.split("\n\n");
+                            const category = parts[0] || "Review";
+                            const anchor = parts[1] || "";
+                            const commentDetails = parts.slice(2).join("\n\n");
+
+                            return (
+                              <div key={comment.id} className="bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg p-3">
+                                <div className="flex items-start justify-between mb-1">
+
+                                  <div className="text-xs text-gray-500 ">
+                                    {comment.section_title}
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      // Find the section containing this talking point
+                                      let targetChapterId: number | null = null;
+                                      let targetSectionId: number | null = null;
+                                      let targetSectionTitle: string | null = null;
+
+                                      if (outline?.chapters) {
+                                        for (const chapter of outline.chapters) {
+                                          for (const section of chapter.sections || []) {
+                                            for (const tp of section.talking_points || []) {
+                                              if (tp.id === comment.talking_point_id) {
+                                                targetChapterId = chapter.id!;
+                                                targetSectionId = section.id!;
+                                                targetSectionTitle = section.title;
+                                                break;
+                                              }
+                                            }
+                                            if (targetSectionId) break;
+                                          }
+                                          if (targetSectionId) break;
+                                        }
+                                      }
+
+                                      // Navigate to the section if different from current
+                                      if (targetChapterId && targetSectionId && targetSectionTitle) {
+                                        if (selectedItem?.sectionId !== targetSectionId) {
+                                          handleSectionClick(targetChapterId, targetSectionId, targetSectionTitle);
+                                        }
+                                      }
+
+                                      // Navigate to the talking point
+                                      setCurrentTalkingPointId(comment.talking_point_id);
+
+                                      // Scroll to the talking point element after section loads
+                                      setTimeout(() => {
+                                        const tpElement = document.querySelector(`[data-tp-id="${comment.talking_point_id}"]`);
+                                        if (tpElement) {
+                                          tpElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                                          // Highlight the talking point briefly
+                                          const parent = tpElement.parentElement?.parentElement;
+                                          if (parent) {
+                                            parent.classList.add("ring-2", "ring-[#CDF056]", "ring-opacity-50");
+                                            setTimeout(() => {
+                                              parent.classList.remove("ring-2", "ring-[#CDF056]", "ring-opacity-50");
+                                            }, 2000);
+                                          }
+                                        }
+                                      }, 300); // Longer delay to allow section to render
+                                    }}
+                                    className="text-xs text-[#CDF056] hover:text-[#CDF056]/80 flex items-center gap-1 hover:underline"
+                                    title="Go to talking point"
+                                  >
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                                    </svg>
+                                    Go to
+                                  </button>
+                                </div>
+                                <span className="px-2 py-0.5 bg-[#CDF056]/20 text-[#CDF056] text-xs font-semibold rounded ">
+                                  {category}
+                                </span>
+
+                                <div className="text-xs text-gray-400 mb-2">
+                                  {comment.talking_point_text}
+                                </div>
+                                {anchor && (
+                                  <div className="bg-[#0a1a2e] rounded p-2 mb-2">
+                                    <p className="text-xs text-gray-400 mb-1 font-semibold">Original:</p>
+                                    <p className="text-sm text-gray-300 italic">"{anchor}"</p>
+                                  </div>
+                                )}
+                                {comment.suggested_replacement && (
+                                  <div className="bg-[#0d2a1a] rounded p-2 mb-2">
+                                    <p className="text-xs text-[#CDF056] mb-1 font-semibold">Replace with:</p>
+                                    <p className="text-sm text-green-300">"{comment.suggested_replacement}"</p>
+                                  </div>
+                                )}
+                                {commentDetails && (
+                                  <div className="flex items-start gap-2 mt-3">
+                                    {/* AI Coach Avatar */}
+
+                                    {/* Comment Bubble */}
+                                    <div className="relative flex-1 bg-white rounded-lg  p-3 shadow-sm">
+
+                                      <div className="flex items-center gap-1.5 mb-1">
+                                        <div className="w-7 h-7 rounded-full bg-[#CDF056] flex items-center justify-center shrink-0">
+                                          <svg className="w-4 h-4 text-[#0a1628]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                          </svg>
+                                        </div>
+                                        <span className="text-xs font-semibold text-[#CDF056]">AI Coach</span>
+                                      </div>
+                                      <p className="text-sm text-gray-700 whitespace-pre-wrap relative z-10">{commentDetails}</p>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+
+                    {reviewResult && chapterComments.filter(c => c.comment_type === "ai").length === 0 && (
+                      <div className="text-center text-gray-400 text-sm py-4">
+                        No review suggestions found for this chapter.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : activeRightView === "glossary" ? (
+            <div className="flex flex-col h-full">
+              {/* Header */}
+              <div className="p-4 border-b border-[#2d3a4a] shrink-0">
+                <h3 className="text-sm font-semibold text-white mb-1">GLOSSARY</h3>
+                <p className="text-xs text-gray-400">
+                  Manage domain terms that should not be flagged as spelling errors
+                </p>
+              </div>
+
+              {/* Spelling Convention */}
+              <div className="p-4 border-b border-[#2d3a4a]">
+                <label className="text-xs font-semibold text-gray-400 mb-2 block">SPELLING CONVENTION</label>
+                <select
+                  value={spellingConvention}
+                  onChange={async (e) => {
+                    const newConvention = e.target.value as "us" | "uk" | "auto";
+                    setSpellingConvention(newConvention);
+                    if (bookId) {
+                      const result = await updateSpellingConvention(bookId, newConvention);
+                      if (!result.success) {
+                        console.error("Failed to update spelling convention:", result.error);
+                      }
+                    }
+                  }}
+                  className="w-full px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded text-white text-sm focus:outline-none focus:border-[#CDF056]"
+                >
+                  <option value="auto">Auto-detect from content</option>
+                  <option value="us">American English (US)</option>
+                  <option value="uk">British English (UK)</option>
+                </select>
+              </div>
+
+              {/* Add Term */}
+              <div className="p-4 border-b border-[#2d3a4a]">
+                <label className="text-xs font-semibold text-gray-400 mb-2 block">ADD TERM</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newTermInput}
+                    onChange={(e) => setNewTermInput(e.target.value)}
+                    placeholder="Enter term..."
+                    className="flex-1 px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded text-white text-sm placeholder-gray-500 focus:outline-none focus:border-[#CDF056]"
+                    onKeyDown={async (e) => {
+                      if (e.key === "Enter" && newTermInput.trim() && bookId) {
+                        const result = await createGlossaryTerm(bookId, {
+                          term: newTermInput.trim(),
+                          do_not_change: true,
+                          category: "other",
+                        });
+                        if (result.success && result.data) {
+                          setGlossaryTerms([...glossaryTerms, result.data]);
+                          setNewTermInput("");
+                        } else {
+                          alert(result.error || "Failed to add term");
+                        }
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={async () => {
+                      if (newTermInput.trim() && bookId) {
+                        const result = await createGlossaryTerm(bookId, {
+                          term: newTermInput.trim(),
+                          do_not_change: true,
+                          category: "other",
+                        });
+                        if (result.success && result.data) {
+                          setGlossaryTerms([...glossaryTerms, result.data]);
+                          setNewTermInput("");
+                        } else {
+                          alert(result.error || "Failed to add term");
+                        }
+                      }
+                    }}
+                    disabled={!newTermInput.trim()}
+                    className="px-3 py-2 bg-[#CDF056] text-black rounded text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#CDF056]/80"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Terms List */}
+              <div className="flex-1 overflow-y-auto p-4">
+                {isLoadingGlossary ? (
+                  <div className="text-center py-8">
+                    <svg className="animate-spin h-6 w-6 text-[#CDF056] mx-auto" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    <p className="text-gray-400 text-sm mt-2">Loading glossary...</p>
+                  </div>
+                ) : glossaryTerms.length === 0 ? (
+                  <div className="text-center py-8 text-gray-400 text-sm">
+                    <p className="mb-2">No glossary terms yet.</p>
+                    <p className="text-xs">Add domain, brand, or framework terms that shouldn&apos;t be flagged as spelling errors.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {glossaryTerms.map((term) => (
+                      <div key={term.id} className="bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg p-3 group">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-white font-medium">{term.term}</span>
+                              {term.preferred_spelling && term.preferred_spelling !== term.term && (
+                                <span className="text-xs text-gray-400">→ {term.preferred_spelling}</span>
+                              )}
+                              {term.do_not_change && (
+                                <span className="px-1.5 py-0.5 bg-[#CDF056]/20 text-[#CDF056] text-[10px] font-semibold rounded">
+                                  DO NOT CHANGE
+                                </span>
+                              )}
+                            </div>
+                            {term.definition && (
+                              <p className="text-xs text-gray-400 mt-1">{term.definition}</p>
+                            )}
+                            <span className="text-[10px] text-gray-500 mt-1 inline-block capitalize">
+                              {term.category.replace("_", " ")}
+                            </span>
+                          </div>
+                          <button
+                            onClick={async () => {
+                              if (confirm(`Delete "${term.term}" from glossary?`)) {
+                                const result = await deleteGlossaryTerm(term.id);
+                                if (result.success) {
+                                  setGlossaryTerms(glossaryTerms.filter((t) => t.id !== term.id));
+                                } else {
+                                  alert(result.error || "Failed to delete term");
+                                }
+                              }
+                            }}
+                            className="text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Delete term"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ) : activeRightView === "moreActions" ? (
@@ -4195,8 +4641,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             }}
             disabled={collaboratorRole === "viewer"}
             className={`p-2 rounded transition-colors ${collaboratorRole === "viewer"
-                ? "text-gray-600 opacity-50 cursor-not-allowed"
-                : activeRightView === "comments" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
+              ? "text-gray-600 opacity-50 cursor-not-allowed"
+              : activeRightView === "comments" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
               }`}
             title={collaboratorRole === "viewer" ? "Viewers cannot comment" : "Comments"}
           >
@@ -4211,8 +4657,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             }}
             disabled={collaboratorRole === "viewer"}
             className={`p-2 rounded transition-colors ${collaboratorRole === "viewer"
-                ? "text-gray-600 opacity-50 cursor-not-allowed"
-                : activeRightView === "chat" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
+              ? "text-gray-600 opacity-50 cursor-not-allowed"
+              : activeRightView === "chat" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
               }`}
             title={collaboratorRole === "viewer" ? "Viewers cannot use chat" : "Chat"}
           >
@@ -4227,8 +4673,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             }}
             disabled={!isBookOwner && collaboratorRole !== "editor"}
             className={`p-2 rounded transition-colors relative ${!isBookOwner && collaboratorRole !== "editor"
-                ? "text-gray-600 opacity-50 cursor-not-allowed"
-                : activeRightView === "changes" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
+              ? "text-gray-600 opacity-50 cursor-not-allowed"
+              : activeRightView === "changes" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
               }`}
             title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can view changes" : "Changes"}
           >
@@ -4251,12 +4697,44 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           <button
             onClick={() => {
               if (!isBookOwner && collaboratorRole !== "editor") return;
+              setActiveRightView("review");
+            }}
+            disabled={!isBookOwner && collaboratorRole !== "editor"}
+            className={`p-2 rounded transition-colors ${!isBookOwner && collaboratorRole !== "editor"
+              ? "text-gray-600 opacity-50 cursor-not-allowed"
+              : activeRightView === "review" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
+              }`}
+            title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can review chapters" : "AI Coach Review"}
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </button>
+          <button
+            onClick={() => {
+              if (!isBookOwner) return;
+              setActiveRightView("glossary");
+            }}
+            disabled={!isBookOwner}
+            className={`p-2 rounded transition-colors ${!isBookOwner
+              ? "text-gray-600 opacity-50 cursor-not-allowed"
+              : activeRightView === "glossary" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
+              }`}
+            title={!isBookOwner ? "Only book owners can manage glossary" : "Glossary"}
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+            </svg>
+          </button>
+          <button
+            onClick={() => {
+              if (!isBookOwner && collaboratorRole !== "editor") return;
               setActiveRightView(activeRightView === "moreActions" ? "comments" : "moreActions");
             }}
             disabled={!isBookOwner && collaboratorRole !== "editor"}
             className={`p-2 rounded transition-colors ${!isBookOwner && collaboratorRole !== "editor"
-                ? "text-gray-600 opacity-50 cursor-not-allowed"
-                : activeRightView === "moreActions" ? "bg-[#CDF056] text-white" : "text-gray-400 hover:text-white"
+              ? "text-gray-600 opacity-50 cursor-not-allowed"
+              : activeRightView === "moreActions" ? "bg-[#CDF056] text-white" : "text-gray-400 hover:text-white"
               }`}
             title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can use more actions" : "More Actions"}
           >
@@ -4272,8 +4750,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             }}
             disabled={!isBookOwner}
             className={`p-2 rounded transition-colors ${!isBookOwner
-                ? "text-gray-600 opacity-50 cursor-not-allowed"
-                : "text-gray-400 hover:text-white"
+              ? "text-gray-600 opacity-50 cursor-not-allowed"
+              : "text-gray-400 hover:text-white"
               }`}
             title={!isBookOwner ? "Only book owners can manage collaborators" : "Collaborators"}
           >

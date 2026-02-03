@@ -1062,3 +1062,154 @@ export async function getPositioningBrief(book_id: number) {
   }
 }
 
+export async function reviewChapter(chapter_id: number) {
+  try {
+    const response = await api.post(`pilot/api/chapters/${chapter_id}/review/`);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return { 
+        success: false, 
+        error: err.response.data?.detail || err.message,
+        data: err.response.data
+      };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function getChapterComments(chapter_id: number) {
+  try {
+    const response = await api.get(`pilot/api/chapters/${chapter_id}/comments/`);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return { 
+        success: false, 
+        error: err.response.data?.detail || err.message,
+        data: err.response.data
+      };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+// ============================================
+// GLOSSARY API
+// ============================================
+
+export interface GlossaryTerm {
+  id: number;
+  book: number;
+  term: string;
+  preferred_spelling: string | null;
+  definition: string | null;
+  do_not_change: boolean;
+  category: "brand" | "framework" | "technical" | "acronym" | "proper_noun" | "other";
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getGlossaryTerms(book_id: number) {
+  try {
+    const response = await api.get(`pilot/api/books/${book_id}/glossary/`);
+    return { success: true, status: response.status, data: response.data as GlossaryTerm[] };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return { 
+        success: false, 
+        error: err.response.data?.detail || err.message,
+        data: err.response.data
+      };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function createGlossaryTerm(book_id: number, term: Partial<GlossaryTerm>) {
+  try {
+    const response = await api.post(`pilot/api/books/${book_id}/glossary/`, term);
+    return { success: true, status: response.status, data: response.data as GlossaryTerm };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return { 
+        success: false, 
+        error: err.response.data?.detail || err.response.data?.term?.[0] || err.message,
+        data: err.response.data
+      };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function updateGlossaryTerm(term_id: number, updates: Partial<GlossaryTerm>) {
+  try {
+    const response = await api.put(`pilot/api/glossary/${term_id}/`, updates);
+    return { success: true, status: response.status, data: response.data as GlossaryTerm };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return { 
+        success: false, 
+        error: err.response.data?.detail || err.message,
+        data: err.response.data
+      };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function deleteGlossaryTerm(term_id: number) {
+  try {
+    const response = await api.delete(`pilot/api/glossary/${term_id}/`);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return { 
+        success: false, 
+        error: err.response.data?.detail || err.message,
+        data: err.response.data
+      };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function updateSpellingConvention(book_id: number, convention: "us" | "uk" | "auto") {
+  try {
+    const response = await api.put(`pilot/api/books/${book_id}/spelling_convention/`, { 
+      spelling_convention: convention 
+    });
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return { 
+        success: false, 
+        error: err.response.data?.detail || err.message,
+        data: err.response.data
+      };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+

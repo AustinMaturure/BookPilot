@@ -284,9 +284,9 @@ export default function Position({
         }
 
         // Only refresh pillars if it was just completed (not if it was already complete)
-        // Don't auto-navigate - let user stay on current pillar
+        // Auto-navigate to next uncompleted pillar
         if (pillar_status === "COMPLETE" && !wasAlreadyComplete) {
-          await refreshPillars(false); // Pass false to prevent auto-navigation
+          await refreshPillars(true); // Pass true to enable auto-navigation
         } else {
           // Just update the pillars data without navigation
           const pillarsResult = await getPillars(bookId!);
@@ -342,14 +342,23 @@ export default function Position({
         }
       }
 
-      // Only auto-navigate if explicitly requested (e.g., from mark complete button)
-      if (autoNavigate && activePillar && result.data.pillars.find(p => p.id === activePillar.id)?.status === "COMPLETE") {
-        const nextActive = result.data.pillars.find(p => p.status === "ACTIVE");
-        if (nextActive) {
-          await loadPillarChat(nextActive);
-        } else {
-          // All complete
-          setActivePillar(null);
+      // Auto-navigate to next uncompleted pillar when current one is completed
+      if (autoNavigate && activePillar) {
+        const currentPillar = result.data.pillars.find(p => p.id === activePillar.id);
+        if (currentPillar?.status === "COMPLETE") {
+          // Find the next uncompleted pillar (ordered by pillar order)
+          const sortedPillars = [...result.data.pillars].sort((a, b) => a.order - b.order);
+          const currentIndex = sortedPillars.findIndex(p => p.id === activePillar.id);
+          const nextUncompleted = sortedPillars
+            .slice(currentIndex + 1)
+            .find(p => p.status !== "COMPLETE");
+
+          if (nextUncompleted) {
+            await loadPillarChat(nextUncompleted);
+          } else {
+            // All complete
+            setActivePillar(null);
+          }
         }
       }
     }
@@ -468,7 +477,7 @@ export default function Position({
                 className={`w-full text-left p-3 rounded-lg mb-2 transition-all duration-200 ${isActive
                   ? "bg-[#CDF056]/20 border-l-4 border-[#CDF056]"
                   : isComplete
-                    ? "bg-green-500/10 hover:bg-green-500/20 border-l-4 border-green-500"
+                    ? "bg-[#CDF056]/10 hover:bg-[#CDF056]/20 border-l-4 border-[#CDF056]"
                     : "bg-[#2d3a4a]/50 hover:bg-[#2d3a4a]"
                   }`}
               >
@@ -476,7 +485,7 @@ export default function Position({
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <span className={`font-medium text-sm truncate ${isActive ? "text-[#CDF056]" : isComplete ? "text-green-400" : "text-white"
+                      <span className={`font-medium text-sm truncate ${isActive ? "text-[#CDF056]" : isComplete ? "text-[#CDF056]" : "text-white"
                         }`}>
                         {pillar.name}
                       </span>
