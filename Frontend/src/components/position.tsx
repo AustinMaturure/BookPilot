@@ -342,11 +342,14 @@ export default function Position({
         }
       }
 
+      const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
       // Auto-navigate to next uncompleted pillar when current one is completed
       if (autoNavigate && activePillar) {
         const currentPillar = result.data.pillars.find(p => p.id === activePillar.id);
         if (currentPillar?.status === "COMPLETE") {
           // Find the next uncompleted pillar (ordered by pillar order)
+          await delay(2500);
           const sortedPillars = [...result.data.pillars].sort((a, b) => a.order - b.order);
           const currentIndex = sortedPillars.findIndex(p => p.id === activePillar.id);
           const nextUncompleted = sortedPillars
