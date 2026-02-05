@@ -493,7 +493,7 @@ export default function Position({
                         {pillar.name}
                       </span>
                       {pillar.depth_score > 0 && (
-                        <span className={`text-xs px-1.5 py-0.5 rounded ${pillar.depth_score >= 80 ? "bg-green-500/20 text-green-400" :
+                        <span className={`text-xs px-1.5 py-0.5 rounded ${pillar.depth_score >= 80 ? "bg-[#CDF056]/20 text-[#CDF056]" :
                           pillar.depth_score >= 50 ? "bg-yellow-500/20 text-yellow-400" :
                             "bg-red-500/20 text-red-400"
                           }`}>
@@ -903,7 +903,7 @@ export default function Position({
                   const pillar = pillarsData?.pillars.find(p => p.slug === slug);
                   return pillar ? (
                     <div key={slug} className="flex items-center gap-2 text-sm">
-                      <span className="text-green-400">✓</span>
+                      <span className="text-[#CDF056]">✓</span>
                       <span className="text-white">{pillar.name}</span>
                     </div>
                   ) : null;
