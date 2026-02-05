@@ -915,12 +915,12 @@ export default function OutlineView({
         <div className="flex items-center justify-between mb-6 p-8">
           <div>
             <h1 className="text-3xl font-bold text-gray-900 mb-2">Book Outline</h1>
-            <p className="text-gray-600">Structure your expertise. Drag to reorder.</p>
+            <p className="text-gray-600">Create a solid structure and plan for your content. Drag to reorder.</p>
           </div>
           <div className="flex gap-3">
             <button
               onClick={toggleExpandAll}
-              className="px-4 py-2 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium"
+              className="px-4 py-2 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium rounded-md"
             >
               Expand All
             </button>
@@ -930,7 +930,7 @@ export default function OutlineView({
                   onSwitchTab("position");
                 }
               }}
-              className="px-4 py-2 bg-[#CDF056] text-gray border-black border hover:bg-[#3bc96d] font-medium flex items-center gap-2"
+              className="px-4 py-2 bg-[#CDF056] text-gray border-black border hover:bg-[#3bc96d] font-medium flex items-center gap-2 rounded-md"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />

@@ -458,7 +458,7 @@ export default function Position({
           </div>
           <div className="relative w-full h-2 bg-[#2d3a4a] rounded-full overflow-hidden">
             <div
-              className="absolute left-0 top-0 h-full bg-gradient-to-r from-[#CDF056] to-[#4ade80] rounded-full transition-all duration-500"
+              className="absolute left-0 top-0 h-full bg-gradient-to-r from-[#CDF056] to-[#bee73a] rounded-full transition-all duration-500"
               style={{ width: `${progress}%` }}
             />
           </div>
@@ -493,10 +493,7 @@ export default function Position({
                         {pillar.name}
                       </span>
                       {pillar.depth_score > 0 && (
-                        <span className={`text-xs px-1.5 py-0.5 rounded ${pillar.depth_score >= 80 ? "bg-[#CDF056]/20 text-[#CDF056]" :
-                          pillar.depth_score >= 50 ? "bg-yellow-500/20 text-yellow-400" :
-                            "bg-red-500/20 text-red-400"
-                          }`}>
+                        <span className={`text-xs px-1.5 py-0.5 rounded bg-[#CDF056]/20 text-[#CDF056]`}>
                           {Math.round(pillar.depth_score)}%
                         </span>
                       )}
@@ -663,9 +660,9 @@ export default function Position({
                       >
                         {msg.content.split(/\[[\w_]+: COMPLETE\]/)[0]}
                       </ReactMarkdown>
-                      <div className="mt-3 p-3 bg-green-100 rounded-lg border border-green-200">
-                        <span className="text-green-700 font-semibold flex items-center gap-2">
-                          ✅ Pillar Complete! Moving to next pillar...
+                      <div className="mt-3 p-3 bg-[#cdf056] rounded-lg border border-[#CDF056]/20">
+                        <span className="text-white font-semibold flex items-center gap-2">
+                           Pillar Complete! Moving to next pillar...
                         </span>
                       </div>
                     </>
@@ -692,8 +689,8 @@ export default function Position({
                 )}*/}
               </div>
               {msg.role === "user" && (
-                <div className="shrink-0 w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center">
-                  <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div className="shrink-0 w-10 h-10 rounded-full bg-[#44446aaf] flex items-center justify-center">
+                  <svg className="w-6 h-6 text-[#44446a]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                   </svg>
                 </div>
