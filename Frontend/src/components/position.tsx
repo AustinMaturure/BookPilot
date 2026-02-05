@@ -478,9 +478,9 @@ export default function Position({
                 key={pillar.id}
                 onClick={() => handleSelectPillar(pillar)}
                 className={`w-full text-left p-3 rounded-lg mb-2 transition-all duration-200 ${isActive
-                  ? "bg-[#CDF056]/20 border-l-4 border-[#CDF056]"
+                  ? "border-l-4  bg-[#2d3a4a]/50 border-[#CDF056] hover:bg-[#2d3a4a]/50"
                   : isComplete
-                    ? "bg-[#CDF056]/10 hover:bg-[#CDF056]/20 border-l-4 border-[#CDF056]"
+                    ? "bg-[#2d3a4a]/50 hover:bg-[#2d3a4a] border-l-4 border-[#CDF056]"
                     : "bg-[#2d3a4a]/50 hover:bg-[#2d3a4a]"
                   }`}
               >
