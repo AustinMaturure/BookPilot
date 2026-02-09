@@ -907,13 +907,9 @@ function TiptapEditor({
   }, [editor, pendingChanges]);
 
 
-  const [browserSupportsSpeechRecognition, setBrowserSupportsSpeechRecognition] = useState(false);
-  const [isListening, setIsListening] = useState(false);
+
  
 
-  useEffect(() => {
-    setBrowserSupportsSpeechRecognition(SpeechRecognition.browserSupportsSpeechRecognition());
-  }, []);
 
 
 
@@ -2344,6 +2340,21 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
   const [browserSupportsSpeechRecognition, setBrowserSupportsSpeechRecognition] = useState(false);
   const [isListening, setIsListening] = useState(false);
+
+  useEffect(() => {
+    setBrowserSupportsSpeechRecognition(SpeechRecognition.browserSupportsSpeechRecognition());
+  }, []);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setChatInput(e.target.value);
+
+    if (isListening) {
+      SpeechRecognition.stopListening();
+      setIsListening(false);
+    }
+  };
+  
+  
 
 
 
@@ -3893,7 +3904,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     ref={chatInputRef}
                     type="text"
                     value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
+                    onChange={handleInputChange}
                     onKeyPress={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();

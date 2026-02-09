@@ -437,6 +437,15 @@ export default function Position({
     }
   };
 
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setUserMessage(e.target.value);
+    if (isListening) {
+      SpeechRecognition.stopListening();
+      setIsListening(false);
+    }
+  };
+  
+
   // Calculate progress from completed pillars (more reliable than stateEmission)
   const progress = pillarsData?.pillars
     ? Math.round((pillarsData.pillars.filter(p => p.status === "COMPLETE").length / 9) * 100)
@@ -828,7 +837,7 @@ export default function Position({
                   ref={inputRef}
                   type="text"
                   value={userMessage}
-                  onChange={(e) => setUserMessage(e.target.value)}
+                  onChange={handleInputChange}
                   onKeyPress={handleKeyPress}
                   disabled={isSending}
                   className="w-full px-5 py-3.5 pr-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#CDF056] text-gray-900 placeholder-gray-400"
