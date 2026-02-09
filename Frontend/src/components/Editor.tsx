@@ -21,7 +21,7 @@ import card2 from "../assets/Branding/Card2.png"
 import "./Editor.css";
 import SpeechToText from "../utils/speech-to-text.tsx";
 import SpeechRecognition from 'react-speech-recognition';
-import { useSpeechRecognition } from 'react-speech-recognition';  
+ 
 
 // Get selected text using multiple methods for cross-browser compatibility
 const getSelectedText = (): string => {
@@ -3904,12 +3904,15 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     className="flex-1 px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#CDF056]"
                     disabled={isChatLoading}
                   />
-                                  <SpeechToText
+                                  
+{browserSupportsSpeechRecognition && (
+  <SpeechToText
  onTranscript={handleTranscript}
  onListeningChange={setIsListening}
+
   
 />
-
+)}
                   <button
                     onClick={() => handleSendChatMessage(false)}
                     disabled={!chatInput.trim() || isChatLoading}

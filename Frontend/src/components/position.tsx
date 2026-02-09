@@ -809,11 +809,11 @@ export default function Position({
                   </svg>
                 )}
               </button>
-              <SpeechToText
+              {browserSupportsSpeechRecognition && (<SpeechToText
  onTranscript={handleTranscript}
  onListeningChange={setIsListening}
   
-/>
+/>)}
               {/* Hidden File Input */}
               <input
                 ref={fileInputRef}
