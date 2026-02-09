@@ -18,8 +18,9 @@ import {
   type PillarAsset,
 } from "../utils/api";
 import card2 from "../assets/Branding/Card2.png";
-
-// Types
+import SpeechToText from "../utils/speech-to-text";
+import SpeechRecognition from 'react-speech-recognition';
+      // Types
 type TalkingPoint = { id?: number; text: string; order?: number; content?: string };
 type Section = { id?: number; title: string; order?: number; talking_points: TalkingPoint[] };
 type Chapter = { id?: number; title: string; order?: number; sections: Section[] };
@@ -74,12 +75,23 @@ export default function Position({
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [browserSupportsSpeechRecognition, setBrowserSupportsSpeechRecognition] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+
+  useEffect(() => {
+    setBrowserSupportsSpeechRecognition(SpeechRecognition.browserSupportsSpeechRecognition());
+  }, []);
   // Initialize pillars on mount
   useEffect(() => {
     if (bookId) {
       initializePillarsForBook();
     }
   }, [bookId]);
+
+  const handleTranscript = (text: string) => {
+    setUserMessage(prev => (prev + ' ' + text).trim());
+  };
+  
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -257,6 +269,8 @@ export default function Position({
   };
 
   const sendMessage = async () => {
+    SpeechRecognition.stopListening();
+
     const trimmed = userMessage.trim();
     if (!trimmed || isSending || !activePillar) return;
 
@@ -777,6 +791,7 @@ export default function Position({
 
             <div className="flex items-center gap-3 max-w-4xl mx-auto">
               {/* File Upload Button */}
+
               <button
                 onClick={handleUploadClick}
                 disabled={isUploading || isSending}
@@ -794,7 +809,11 @@ export default function Position({
                   </svg>
                 )}
               </button>
-
+              <SpeechToText
+ onTranscript={handleTranscript}
+ onListeningChange={setIsListening}
+  
+/>
               {/* Hidden File Input */}
               <input
                 ref={fileInputRef}

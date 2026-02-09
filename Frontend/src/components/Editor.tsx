@@ -19,7 +19,9 @@ import { Mapping, Step } from "prosemirror-transform";
 import { parseSteps, getPreviewFragments, findTextRangeInDoc } from "../utils/stepUtils";
 import card2 from "../assets/Branding/Card2.png"
 import "./Editor.css";
-
+import SpeechToText from "../utils/speech-to-text.tsx";
+import SpeechRecognition from 'react-speech-recognition';
+import { useSpeechRecognition } from 'react-speech-recognition';  
 
 // Get selected text using multiple methods for cross-browser compatibility
 const getSelectedText = (): string => {
@@ -833,7 +835,6 @@ function TiptapEditor({
     }
   }, [editor, editorRef]);
 
-  // Legacy ChangeTrackingExtension removed; suggestions handled by step decorations only
 
 
   // Initial mount only: hydrate editor from canonical content
@@ -904,6 +905,17 @@ function TiptapEditor({
     const tr = editor.state.tr.setMeta("collaborationRefresh", Date.now());
     editor.view.dispatch(tr);
   }, [editor, pendingChanges]);
+
+
+  const [browserSupportsSpeechRecognition, setBrowserSupportsSpeechRecognition] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+ 
+
+  useEffect(() => {
+    setBrowserSupportsSpeechRecognition(SpeechRecognition.browserSupportsSpeechRecognition());
+  }, []);
+
+
 
 
   // NOTE: Shadow suggestions are now shown via DECORATIONS only (Base Doc + Overlay strategy)
@@ -1058,6 +1070,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [selectionRange, setSelectionRange] = useState<{ from: number; to: number } | null>(null);
   const [chatMessages, setChatMessages] = useState<Array<{ from: "user" | "ai"; text: string; highlightedText?: string }>>([]);
   const [chatInput, setChatInput] = useState("");
+  const handleTranscript = (text: string) => {
+    setChatInput(prev => (prev + ' ' + text).trim());
+  };
+  
   const [isChatLoading, setIsChatLoading] = useState(false);
   const chatMessagesEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
@@ -2326,6 +2342,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     }
   };
 
+  const [browserSupportsSpeechRecognition, setBrowserSupportsSpeechRecognition] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+
+
+
   const handleGenerateTalkingPointsFromChapter = async (chapterId: number, assetIds: number[]) => {
     if (!bookId || !outline) return;
 
@@ -2789,6 +2810,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       setIsInviting(false);
     }
   };
+
+
+
 
   const handleRemoveCollaborator = async (collaboratorId: number) => {
     if (!bookId) return;
@@ -3813,7 +3837,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
               {/* Chat Messages */}
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {chatMessages.length === 0 ? (
+                {
+                
+                
+                chatMessages.length === 0 ? (
                   <div className="flex justify-start">
                     <div className="bg-white rounded-lg p-3 text-sm max-w-[80%]">
                       <p className="text-gray-900">How can i help?</p>
@@ -3859,7 +3886,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
               {/* Chat Input */}
               <div className="p-4 border-t border-[#2d3a4a] shrink-0">
+  
                 <div className="flex gap-2 mb-2">
+
                   <input
                     ref={chatInputRef}
                     type="text"
@@ -3875,6 +3904,12 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     className="flex-1 px-3 py-2 bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#CDF056]"
                     disabled={isChatLoading}
                   />
+                                  <SpeechToText
+ onTranscript={handleTranscript}
+ onListeningChange={setIsListening}
+  
+/>
+
                   <button
                     onClick={() => handleSendChatMessage(false)}
                     disabled={!chatInput.trim() || isChatLoading}
@@ -3885,6 +3920,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     </svg>
                   </button>
                 </div>
+                
                 <button
                   onClick={(e) => {
                     e.preventDefault();
@@ -3898,6 +3934,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                   </svg>
                   Apply Changes to Content
                 </button>
+                
               </div>
             </div>
           ) : activeRightView === "review" ? (
