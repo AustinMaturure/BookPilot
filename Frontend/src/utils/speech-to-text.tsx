@@ -48,6 +48,10 @@ const SpeechToText = ({ onTranscript, onListeningChange }: Props) => {
         language: 'en-US',
       });
     }
+    console.log({
+        secure: window.isSecureContext,
+        supports: SpeechRecognition.browserSupportsSpeechRecognition(),
+      });
   };
 
   return (
