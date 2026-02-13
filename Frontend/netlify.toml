@@ -2,6 +2,13 @@
   command = "npm run build"
   publish = "dist"
 
+# Headers for Google OAuth popup compatibility (Cross-Origin-Opener-Policy)
+# Allows window.closed checks when OAuth popup returns - required for Google Sign-In
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cross-Origin-Opener-Policy = "same-origin-allow-popups"
+
 # Configure secrets scanning
 # Vite injects environment variables at build time, which is expected behavior
 # These are public env vars (VITE_*) meant to be in the client bundle
