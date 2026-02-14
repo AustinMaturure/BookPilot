@@ -52,23 +52,23 @@ export const clampToTextRange = (doc: PMNode, from: number, to: number): { from:
   return { from: textFrom, to: textTo };
 };
 
-const extractSliceText = (stepAny: any): string => {
-  const sliceContent = stepAny?.slice?.content ?? stepAny?.slice;
+const BLOCK_TYPES = new Set(["paragraph", "heading", "blockquote", "codeBlock", "listItem", "bulletList", "orderedList"]);
+
+export const extractSliceText = (stepAny: any): string => {
+  const slice = stepAny?.slice;
+  const sliceContent = slice?.content ?? slice;
   if (!sliceContent) return "";
-  
+
   const extract = (node: any): string => {
     if (!node) return "";
-    // Handle ProseMirror text nodes (live objects)
+    const nodeType = node.type ?? node.nodeType;
+    if (nodeType === "hardBreak" || nodeType === "hard_break") return "\n";
     if (node.isText && typeof node.text === "string") return node.text;
-    // Handle JSON text nodes
-    if (node.type === "text" && node.text) return node.text;
-    // Handle arrays
+    if (nodeType === "text" && node.text != null) return String(node.text);
     if (Array.isArray(node)) return node.map(extract).join("");
-    // Handle JSON content arrays
     if (node.content && Array.isArray(node.content)) {
       return node.content.map(extract).join("");
     }
-    // Handle ProseMirror Fragment objects
     if (typeof node.childCount === "number") {
       let text = "";
       for (let i = 0; i < node.childCount; i++) {
@@ -78,8 +78,43 @@ const extractSliceText = (stepAny: any): string => {
     }
     return "";
   };
-  
-  return extract(sliceContent);
+
+  const nodes = Array.isArray(sliceContent) ? sliceContent : (sliceContent.content ? sliceContent.content : [sliceContent]);
+  if (!Array.isArray(nodes) || nodes.length === 0) return extract(sliceContent);
+
+  // For open slices (paragraph split): only show the TRULY inserted content.
+  // openStart/openEnd mean the first/last nodes merge with the doc - they're not new.
+  // Showing them would duplicate existing text and "cut"/"separate" incorrectly.
+  const openStart = typeof slice?.openStart === "number" ? slice.openStart : 0;
+  const openEnd = typeof slice?.openEnd === "number" ? slice.openEnd : 0;
+  let nodesToExtract = nodes;
+  if (nodes.length >= 3 && (openStart > 0 || openEnd > 0)) {
+    const skipFirst = openStart > 0 ? 1 : 0;
+    const skipLast = openEnd > 0 ? 1 : 0;
+    const start = skipFirst;
+    const end = nodes.length - skipLast;
+    if (start < end) {
+      nodesToExtract = nodes.slice(start, end);
+    }
+  }
+
+  const parts: string[] = [];
+  for (let i = 0; i < nodesToExtract.length; i++) {
+    const node = nodesToExtract[i];
+    const nodeType = node?.type ?? node?.nodeType;
+    let text = extract(node);
+    if (i > 0) {
+      const prevType = nodesToExtract[i - 1]?.type ?? nodesToExtract[i - 1]?.nodeType;
+      const prevIsHardBreak = prevType === "hardBreak" || prevType === "hard_break";
+      const currIsHardBreak = nodeType === "hardBreak" || nodeType === "hard_break";
+      const prevIsBlock = BLOCK_TYPES.has(prevType) || prevIsHardBreak;
+      const prevHadContent = parts.length > 0 && parts[parts.length - 1] !== "\n";
+      if (prevIsBlock && !currIsHardBreak && (text || prevHadContent)) parts.push("\n");
+    }
+    if (!text && BLOCK_TYPES.has(nodeType)) text = "\n";
+    parts.push(text);
+  }
+  return parts.join("");
 };
 
 export const parseSteps = (schema: Schema, stepJson: any[] | any): Step[] => {
@@ -104,7 +139,9 @@ export const parseSteps = (schema: Schema, stepJson: any[] | any): Step[] => {
       }
       if (raw.insertedText) {
         (step as any).insertedText = raw.insertedText;
-        console.log(`[parseSteps] Step ${index}: copied insertedText="${raw.insertedText}"`);
+      } else if (raw.slice) {
+        const fromSlice = extractSliceText(raw);
+        if (fromSlice) (step as any).insertedText = fromSlice;
       }
       // Copy originalFrom - the exact position where user typed
       if (typeof raw.originalFrom === "number") {
@@ -157,20 +194,48 @@ export const mapSteps = (steps: Step[], mapping: Mapping): MapResult => {
   return { steps: mappedSteps, failed: false };
 };
 
+/**
+ * Remap step positions through previous steps before computing decorations.
+ * ProseMirror pattern: step.map(mapping) then mapping.appendMap(step.getMap()).
+ * Build highlights using returned remappedSteps, not original steps.
+ */
+export const remapStepsToBase = (steps: Step[]): Step[] => {
+  const mapping = new Mapping();
+  const remappedSteps: Step[] = [];
+  for (const step of steps) {
+    const mappedStep = step.map(mapping);
+    if (mappedStep) {
+      const orig = step as any;
+      const mapped = mappedStep as any;
+      if (orig.deletedText) mapped.deletedText = orig.deletedText;
+      if (orig.insertedText) mapped.insertedText = orig.insertedText;
+      if (typeof orig.originalFrom === "number") mapped.originalFrom = orig.originalFrom;
+      remappedSteps.push(mappedStep);
+      mapping.appendMap(step.getMap());
+    }
+  }
+  return remappedSteps;
+};
+
 export const getPreviewFragments = (
   doc: PMNode,
   steps: Step[],
   options: PreviewOptions = {}
 ): PreviewFragments => {
   const maxFragment = options.maxFragment ?? Infinity;
-  let currentDoc = doc;
   const deletedTexts: string[] = [];
   const insertedTexts: string[] = [];
 
-  steps.forEach((step) => {
+  // Remap steps through previous steps so each step has positions in the doc it applies to.
+  // This fixes "step out of bounds" when compressed steps have positions in base doc.
+  const remappedSteps = remapStepsToBase(steps);
+  let currentDoc = doc;
+
+  for (let i = 0; i < remappedSteps.length; i++) {
+    const step = remappedSteps[i];
     const stepAny = step as any;
     if (typeof stepAny.from !== "number" || typeof stepAny.to !== "number") {
-      return;
+      continue;
     }
     const hasSlice = stepAny.slice && stepAny.slice.size > 0;
 
@@ -179,7 +244,6 @@ export const getPreviewFragments = (
     const safeTo = Math.max(0, Math.min(stepAny.to, docSize));
 
     if (safeFrom < safeTo) {
-      // PRIORITY: Use stored deletedText if available (from compressed steps)
       let deleted = "";
       if (stepAny.deletedText && typeof stepAny.deletedText === "string") {
         deleted = stepAny.deletedText;
@@ -195,17 +259,6 @@ export const getPreviewFragments = (
       }
     }
 
-    if (stepAny.from < 0 || stepAny.to < 0 || stepAny.from > docSize || stepAny.to > docSize) {
-      if (typeof globalThis !== "undefined") {
-        (globalThis as any).console?.warn?.("[getPreviewFragments] step out of bounds; skipped", {
-          from: stepAny.from,
-          to: stepAny.to,
-          docSize,
-        });
-      }
-      return;
-    }
-
     let applied: { failed: any; doc: PMNode | null };
     try {
       applied = step.apply(currentDoc) as any;
@@ -213,10 +266,10 @@ export const getPreviewFragments = (
       if (typeof globalThis !== "undefined") {
         (globalThis as any).console?.warn?.("[getPreviewFragments] step apply failed", error);
       }
-      return;
+      continue;
     }
     if (applied.failed || !applied.doc) {
-      return;
+      continue;
     }
 
     if (hasSlice) {
@@ -230,7 +283,7 @@ export const getPreviewFragments = (
     }
 
     currentDoc = applied.doc;
-  });
+  }
 
   return {
     deleted: deletedTexts.join(" "),
@@ -301,6 +354,87 @@ export const findTextRangeInDoc = (
 };
 
 /**
+ * findTextRangeNormalized - Like findTextRangeInDoc but normalizes whitespace (collapse to space, trim)
+ * Useful for AI suggestions where anchor may have different whitespace than the document
+ */
+export const findTextRangeNormalized = (
+  doc: PMNode,
+  searchText: string
+): { from: number; to: number } | null => {
+  const normalizeSearch = (t: string) => t.replace(/\s+/g, " ").trim();
+  const normalizedTarget = normalizeSearch(searchText);
+  if (!normalizedTarget) return null;
+
+  let normalizedText = "";
+  const positionMap: Array<{ pmPos: number; charIndex: number }> = [];
+
+  doc.nodesBetween(0, doc.content.size, (node: any, pos: number) => {
+    if (node.isText) {
+      const nodeText = node.text || "";
+      for (let i = 0; i < nodeText.length; i++) {
+        const char = nodeText[i];
+        // pos is before the text node; character i runs from pos+i to pos+i+1
+        const pmPos = pos + i;
+        if (/\s/.test(char)) {
+          if (normalizedText.length === 0 || !/\s/.test(normalizedText[normalizedText.length - 1])) {
+            normalizedText += " ";
+            positionMap.push({ pmPos, charIndex: normalizedText.length - 1 });
+          } else {
+            positionMap.push({ pmPos, charIndex: normalizedText.length - 1 });
+          }
+        } else {
+          normalizedText += char;
+          positionMap.push({ pmPos, charIndex: normalizedText.length - 1 });
+        }
+      }
+    }
+    return true;
+  });
+
+  // Only collapse whitespace for doc - do NOT trim, so positionMap indices stay correct
+  const normalizedDoc = normalizedText.replace(/\s+/g, " ");
+  const normalizedDocNoSpaces = normalizedText.replace(/\s+/g, "");
+  if (!normalizedDoc) return null;
+
+  // Try with spaces first; fallback to no spaces (lists/adjacent blocks often have no space between text nodes)
+  let startIndex = normalizedDoc.indexOf(normalizedTarget);
+  let endIndex: number;
+  if (startIndex >= 0) {
+    endIndex = startIndex + normalizedTarget.length;
+  } else if (normalizedTarget.includes(" ")) {
+    const targetNoSpaces = normalizedTarget.replace(/\s+/g, "");
+    const idx = normalizedDocNoSpaces.indexOf(targetNoSpaces);
+    if (idx >= 0) {
+      startIndex = idx;
+      endIndex = idx + targetNoSpaces.length;
+    } else {
+      return null;
+    }
+  } else {
+    return null;
+  }
+
+  const findPmPosForCharIndex = (index: number): number | null => {
+    const exact = positionMap.find((m) => m.charIndex === index);
+    if (exact) return exact.pmPos;
+    if (positionMap.length === 0) return null;
+    const closest = positionMap.reduce((prev, curr) =>
+      Math.abs(curr.charIndex - index) < Math.abs(prev.charIndex - index) ? curr : prev
+    );
+    return closest.pmPos;
+  };
+
+  const pmStart = findPmPosForCharIndex(startIndex);
+  const pmEnd = findPmPosForCharIndex(Math.max(endIndex - 1, startIndex));
+  if (!pmStart || !pmEnd) return null;
+
+  const from = Math.max(1, pmStart);
+  const to = Math.min(doc.content.size, pmEnd + 1);
+  if (to < from) return null;
+  return { from, to };
+};
+
+/**
  * buildDecorations - Creates decoration overlays for pending changes
  * 
  * STRATEGY: "Base Doc + Overlay"
@@ -342,14 +476,12 @@ export const buildDecorations = (
   const deletionClass = mode === "owner" ? "owner-pending-deletion" : "collaborator-pending-deletion";
   const insertionClass = mode === "owner" ? "owner-pending-insertion" : "collaborator-pending-insertion";
 
-  // Process each batch independently - each batch is relative to base doc
-  stepBatches.forEach((batch, batchIndex) => {
-    // Reset offset for each batch - each content change is relative to base doc
+  // Process each batch: remap steps through previous steps, then build decorations
+  stepBatches.forEach((batch) => {
+    const remappedSteps = remapStepsToBase(batch);
     let cumulativeOffset = 0;
-    
-    console.log(`[buildDecorations] Processing batch ${batchIndex} with ${batch.length} steps`);
-    
-    batch.forEach((step, stepIndex) => {
+
+    remappedSteps.forEach((step, stepIndex) => {
       // If mapping is provided, map the step to get updated positions
       let workingStep = step;
       if (mapping) {
@@ -396,53 +528,25 @@ export const buildDecorations = (
       
       console.log(`[buildDecorations] Step ${stepIndex}: isDeletion=${isDeletion}, isInsertion=${isInsertion}, isReplacement=${isReplacement}, hasStoredDeletion=${hasStoredDeletion}`);
 
-      // DELETIONS: Text EXISTS in base doc → Decoration.inline with strikethrough
+      // DELETIONS: Use remapped step positions only
       if (isDeletion || isReplacement) {
-        const storedDeletedText = stepAny.deletedText;
-        
         let finalFrom = actualFrom;
         let finalTo = actualTo;
         
-        // If we have deletedText, compute finalTo from the text length for accuracy
-        if (storedDeletedText && typeof storedDeletedText === "string" && storedDeletedText.length > 0) {
-          finalTo = finalFrom + storedDeletedText.length;
-        }
-        
-        // Clamp to document bounds
+        // Clamp to document bounds (use remapped step positions only, no text search)
         finalFrom = Math.max(0, Math.min(finalFrom, docSize));
-        finalTo = Math.max(finalFrom, Math.min(finalTo, docSize));
-        
-        console.log(`[buildDecorations] Deletion: using step positions from=${actualFrom}, to=${actualTo}, finalFrom=${finalFrom}, finalTo=${finalTo}, deletedText="${(storedDeletedText || '').substring(0, 30)}..."`);
-        
-        // Verify the positions point to valid text
-        let textMatches = false;
-        if (finalFrom < finalTo && finalTo <= docSize && storedDeletedText) {
-          try {
-            const actualText = doc.textBetween(finalFrom, finalTo, "");
-            textMatches = actualText === storedDeletedText;
-            if (!textMatches) {
-              console.log(`[buildDecorations] Text mismatch at positions ${finalFrom}-${finalTo}: expected "${storedDeletedText.substring(0, 30)}..." but found "${actualText.substring(0, 30)}..."`);
-            }
-          } catch (e) {
-            console.log(`[buildDecorations] Could not verify text at positions ${finalFrom}-${finalTo}:`, e);
-          }
+        finalTo = Math.min(docSize, Math.max(finalFrom, Math.min(finalTo, docSize)));
+
+        // Safeguard: cap unreasonably large ranges (prevents full-line/editor highlights from position bugs)
+        const maxRange = 1200; // ~paragraph; larger spans suggest wrong positions
+        if (finalTo - finalFrom > maxRange) {
+          const origTo = finalTo;
+          finalTo = Math.min(finalFrom + maxRange, docSize);
+          console.warn(`[buildDecorations] Step ${stepIndex}: range capped from ${origTo - finalFrom} to ${finalTo - finalFrom} (full-line highlight prevention)`);
         }
-        
-        // If text doesn't match, use findTextRangeInDoc as fallback
-        if (!textMatches && storedDeletedText) {
-          console.log(`[buildDecorations] Using text search fallback for deletion "${storedDeletedText.substring(0, 30)}..."`);
-          const foundRange = findTextRangeInDoc(doc, storedDeletedText, finalFrom);
-          if (foundRange) {
-            finalFrom = foundRange.from;
-            finalTo = foundRange.to;
-            console.log(`[buildDecorations] Found text at ${finalFrom}-${finalTo} via text search`);
-          } else {
-            console.log(`[buildDecorations] Text not found in document, skipping deletion decoration`);
-            return; // Skip this decoration - text was deleted
-          }
-        }
-        
+
         // Create the decoration
+        console.log(`[buildDecorations] Step ${stepIndex}: docSize=${docSize}, finalFrom=${finalFrom}, finalTo=${finalTo}`);
         if (finalFrom < finalTo && finalTo <= docSize) {
           decorations.push(
             Decoration.inline(finalFrom, finalTo, {
@@ -496,6 +600,7 @@ export const buildDecorations = (
             insertPos = 1;
             console.log(`[buildDecorations] Fallback to docPos=1`);
           }
+          console.log(`[buildDecorations] Step ${stepIndex}: docSize=${docSize}, finalFrom=${insertPos}, finalTo=${insertPos}`);
           
           // Merge with existing insertion at this position
           const existing = insertionsByPos.get(insertPos);

@@ -20,6 +20,7 @@ import {
 import card2 from "../assets/Branding/Card2.png";
 import SpeechToText from "../utils/speech-to-text";
 import SpeechRecognition from 'react-speech-recognition';
+import { useNotification } from "../contexts/NotificationContext";
       // Types
 type TalkingPoint = { id?: number; text: string; order?: number; content?: string };
 type Section = { id?: number; title: string; order?: number; talking_points: TalkingPoint[] };
@@ -77,9 +78,13 @@ export default function Position({
 
   const [browserSupportsSpeechRecognition, setBrowserSupportsSpeechRecognition] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const notification = useNotification();
 
   useEffect(() => {
-    setBrowserSupportsSpeechRecognition(SpeechRecognition.browserSupportsSpeechRecognition());
+    // Web Speech API requires secure context (HTTPS) in production
+    const supports = SpeechRecognition.browserSupportsSpeechRecognition();
+    const secure = typeof window !== 'undefined' && window.isSecureContext;
+    setBrowserSupportsSpeechRecognition(supports && secure);
   }, []);
   // Initialize pillars on mount
   useEffect(() => {
@@ -818,11 +823,13 @@ export default function Position({
                   </svg>
                 )}
               </button>
-              {browserSupportsSpeechRecognition && (<SpeechToText
- onTranscript={handleTranscript}
- onListeningChange={setIsListening}
-  
-/>)}
+              {browserSupportsSpeechRecognition && (
+                <SpeechToText
+                  onTranscript={handleTranscript}
+                  onListeningChange={setIsListening}
+                  onError={(msg) => notification.error(msg)}
+                />
+              )}
               {/* Hidden File Input */}
               <input
                 ref={fileInputRef}

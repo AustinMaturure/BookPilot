@@ -6,9 +6,10 @@ import stopIcon from '../assets/stop.svg';
 type Props = {
   onTranscript: (text: string) => void;
   onListeningChange: (listening: boolean) => void;
+  onError?: (message: string) => void;
 };
 
-const SpeechToText = ({ onTranscript, onListeningChange }: Props) => {
+const SpeechToText = ({ onTranscript, onListeningChange, onError }: Props) => {
   const {
     finalTranscript,
     listening,
@@ -16,7 +17,6 @@ const SpeechToText = ({ onTranscript, onListeningChange }: Props) => {
     resetTranscript,
   } = useSpeechRecognition();
 
-  // Keeps track of what we've already emitted
   const lastFinalRef = useRef('');
 
   useEffect(() => {
@@ -35,23 +35,28 @@ const SpeechToText = ({ onTranscript, onListeningChange }: Props) => {
     onListeningChange(listening);
   }, [listening, onListeningChange]);
 
-  if (!browserSupportsSpeechRecognition) return null;
+  // Web Speech API requires secure context (HTTPS) in production
+  const isSecureContext = typeof window !== 'undefined' && window.isSecureContext;
+  const canUseSpeech = browserSupportsSpeechRecognition && isSecureContext;
 
-  const toggleListening = () => {
+  if (!canUseSpeech) return null;
+
+  const toggleListening = async () => {
     if (listening) {
       SpeechRecognition.stopListening();
     } else {
       resetTranscript();
       lastFinalRef.current = '';
-      SpeechRecognition.startListening({
-        continuous: true,
-        language: 'en-US',
-      });
+      try {
+        await SpeechRecognition.startListening({
+          continuous: true,
+          language: 'en-US',
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Speech recognition failed';
+        onError?.(msg);
+      }
     }
-    console.log({
-        secure: window.isSecureContext,
-        supports: SpeechRecognition.browserSupportsSpeechRecognition(),
-      });
   };
 
   return (

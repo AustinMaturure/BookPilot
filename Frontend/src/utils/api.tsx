@@ -239,6 +239,30 @@ export async function fetchBook(id: number) {
   }
 }
 
+export async function updateBook(id: number, data: { title?: string; core_topic?: string | null }) {
+  try {
+    const response = await api.patch(`pilot/api/books/${id}/update/`, data);
+    return { success: true, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function deleteBook(id: number) {
+  try {
+    await api.delete(`pilot/api/books/${id}/delete/`);
+    return { success: true };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
 export async function createChapter(bookId: number, data: { title: string; order?: number }) {
   try {
     const response = await api.post(`pilot/api/books/${bookId}/chapters/`, data);
@@ -745,6 +769,18 @@ export async function deleteContentChange(change_id: number) {
  * updateContentChangeStepJson - Updates the step_json of a content change
  * Used to remap positions after another change is approved
  */
+export async function updateContentChangeComment(change_id: number, comment: string) {
+  try {
+    const response = await api.patch(`pilot/api/changes/${change_id}/`, { comment });
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
 export async function updateContentChangeStepJson(change_id: number, step_json: any) {
   try {
     console.log(`[updateContentChangeStepJson] Updating change ${change_id} with:`, JSON.stringify(step_json));

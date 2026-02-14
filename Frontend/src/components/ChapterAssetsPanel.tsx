@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNotification } from "../contexts/NotificationContext";
 import { uploadChapterAsset, listChapterAssets, deleteChapterAsset } from "../utils/api";
 
 type ChapterAsset = {
@@ -23,6 +24,7 @@ export default function ChapterAssetsPanel({
   chapterId,
   chapterTitle: _chapterTitle,
 }: ChapterAssetsPanelProps) {
+  const notification = useNotification();
   const [assets, setAssets] = useState<ChapterAsset[]>([]);
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -64,7 +66,7 @@ export default function ChapterAssetsPanel({
     const fileExt = file.name.split(".").pop()?.toLowerCase();
     
     if (!fileExt || !allowedTypes.includes(fileExt)) {
-      alert(`File type .${fileExt} not allowed. Allowed types: ${allowedTypes.join(", ")}`);
+      notification.error(`File type .${fileExt} not allowed. Allowed types: ${allowedTypes.join(", ")}`);
       return;
     }
 
@@ -78,11 +80,11 @@ export default function ChapterAssetsPanel({
       if (result.success) {
         await loadAssets();
       } else {
-        alert(result.error || "Failed to upload file");
+        notification.error(result.error || "Failed to upload file");
       }
     } catch (error) {
       console.error("Error uploading file:", error);
-      alert("Failed to upload file");
+      notification.error("Failed to upload file");
     } finally {
       setUploading(false);
       if (fileInputRef.current) {
@@ -97,7 +99,7 @@ export default function ChapterAssetsPanel({
 
   const handleRecordClick = () => {
     // Placeholder for recording functionality
-    alert("Recording functionality coming soon");
+    notification.info("Recording functionality coming soon");
   };
 
   const toggleAssetSelection = (assetId: number) => {
@@ -132,11 +134,11 @@ export default function ChapterAssetsPanel({
           return newSet;
         });
       } else {
-        alert(result.error || "Failed to delete asset");
+        notification.error(result.error || "Failed to delete asset");
       }
     } catch (error) {
       console.error("Error deleting asset:", error);
-      alert("Failed to delete asset");
+      notification.error("Failed to delete asset");
     } finally {
       setDeletingAssetId(null);
     }
@@ -160,7 +162,7 @@ export default function ChapterAssetsPanel({
   if (!isOpen) return null;
 
   return (
-    <div className="absolute left-0 top-0 h-full w-80 bg-[#0a1a2e] border-r border-[#2d3a4a] flex flex-col shadow-2xl z-50">
+    <div className="flex-1 min-h-0 flex flex-col bg-[#0a1a2e] border-r border-[#2d3a4a] w-full">
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-[#2d3a4a] shrink-0">
         <div className="flex items-center gap-3">

@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchBooks, createBook, fetchBook } from "../utils/api";
+import { useNotification } from "../contexts/NotificationContext";
+import { fetchBooks, createBook, fetchBook, deleteBook, updateBook } from "../utils/api";
 import background2 from "../assets/Branding/Log_in_background.png"
 
 type BookSummary = { 
   id: number; 
   title: string;
+  core_topic?: string | null;
   chapters?: any[];
   is_collaboration?: boolean;
   collaborator_role?: "editor" | "viewer" | "commenter" | null;
@@ -15,10 +17,25 @@ type BookSummary = {
 type BookCardProps = {
   book: BookSummary;
   onSelect: (id: number) => void;
+  onDelete?: (id: number) => void;
+  onUpdate?: (id: number, data: { title: string; core_topic: string }) => void;
+  canDelete?: boolean;
+  canEdit?: boolean;
 };
 
-function BookCard({ book, onSelect }: BookCardProps) {
+function BookCard({ book, onSelect, onDelete, onUpdate, canDelete, canEdit }: BookCardProps) {
   const [showMenu, setShowMenu] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(book.title);
+  const [editSubtitle, setEditSubtitle] = useState(book.core_topic || "");
+  
+  // Sync when book props change (e.g. after update from parent)
+  useEffect(() => {
+    if (!isEditing) {
+      setEditTitle(book.title);
+      setEditSubtitle(book.core_topic || "");
+    }
+  }, [book.title, book.core_topic, isEditing]);
   
   // Calculate progress based on chapters (placeholder logic)
   const calculateProgress = () => {
@@ -31,8 +48,7 @@ function BookCard({ book, onSelect }: BookCardProps) {
   const progress = calculateProgress();
   const status = progress > 0 ? "Drafting" : "Planning";
   
-  // Default values for fields not yet in backend
-  const subtitle = "No subtitle"; // Placeholder
+  const subtitle = book.core_topic || "No subtitle";
   const goal = "AUTHORITY BUILDING"; // Placeholder
   const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days from now
 
@@ -40,14 +56,32 @@ function BookCard({ book, onSelect }: BookCardProps) {
     return date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
   };
 
+  const handleSaveEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onUpdate && (editTitle.trim() !== book.title || editSubtitle !== (book.core_topic || ""))) {
+      onUpdate(book.id, { title: editTitle.trim(), core_topic: editSubtitle.trim() || "" });
+    }
+    setIsEditing(false);
+    setShowMenu(false);
+  };
+
+  const handleCancelEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditTitle(book.title);
+    setEditSubtitle(book.core_topic || "");
+    setIsEditing(false);
+    setShowMenu(false);
+  };
+
   return (
     <div 
-      className={`bg-[#002A40] rounded-lg p-5 border transition-all cursor-pointer relative ${
-        book.is_collaboration 
+      className={`bg-[#002A40] rounded-lg p-5 border transition-all relative ${
+        isEditing ? "cursor-default" : "cursor-pointer"
+      } ${book.is_collaboration 
           ? "border-blue-500/50 hover:border-blue-400" 
           : "border-[#2d3a4a] hover:border-[#CDF056]/30"
       }`}
-      onClick={() => onSelect(book.id)}
+      onClick={() => !isEditing && onSelect(book.id)}
     >
       {/* Collaboration Badge */}
       {book.is_collaboration && (
@@ -74,12 +108,32 @@ function BookCard({ book, onSelect }: BookCardProps) {
         </button>
         {showMenu && (
           <div className="absolute right-0 mt-2 w-48 bg-[#2d3a4a] rounded-lg shadow-lg border border-[#3a4a5a] z-10">
-            <button className="w-full text-left px-4 py-2 text-sm text-white hover:bg-[#3a4a5a] rounded-t-lg">
-              Edit
-            </button>
-            <button className="w-full text-left px-4 py-2 text-sm text-white hover:bg-[#3a4a5a]">
-              Delete
-            </button>
+            {canEdit && onUpdate && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowMenu(false);
+                  setIsEditing(true);
+                }}
+                className="w-full text-left px-4 py-2 text-sm text-white hover:bg-[#3a4a5a] rounded-t-lg"
+              >
+                Edit
+              </button>
+            )}
+            {canDelete && onDelete && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowMenu(false);
+                  if (window.confirm(`Delete "${book.title}"? This cannot be undone.`)) {
+                    onDelete(book.id);
+                  }
+                }}
+                className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-[#3a4a5a] hover:text-red-300"
+              >
+                Delete
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -96,15 +150,56 @@ function BookCard({ book, onSelect }: BookCardProps) {
       </div>
 
       {/* Title */}
-      <div className="mb-1">
-        <h3 className="text-white font-bold text-md">{book.title}</h3>
-        {book.is_collaboration && book.owner_name && (
+      <div className="mb-1" onClick={(e) => isEditing && e.stopPropagation()}>
+        {isEditing ? (
+          <input
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full bg-[#1a2a3a] border border-[#3a4a5a] rounded px-2 py-1 text-white font-bold text-md mb-2"
+            placeholder="Title"
+            autoFocus
+          />
+        ) : (
+          <h3 className="text-white font-bold text-md">{book.title}</h3>
+        )}
+        {book.is_collaboration && book.owner_name && !isEditing && (
           <p className="text-blue-400 text-xs mt-1">by {book.owner_name}</p>
         )}
       </div>
       
       {/* Subtitle */}
-      <p className="text-gray-400 text-sm mb-4">{subtitle}</p>
+      <div onClick={(e) => isEditing && e.stopPropagation()} className="mb-4">
+        {isEditing ? (
+          <input
+            value={editSubtitle}
+            onChange={(e) => setEditSubtitle(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full bg-[#1a2a3a] border border-[#3a4a5a] rounded px-2 py-1 text-gray-400 text-sm"
+            placeholder="Subtitle"
+          />
+        ) : (
+          <p className="text-gray-400 text-sm">{subtitle}</p>
+        )}
+      </div>
+      
+      {/* Edit mode buttons */}
+      {isEditing && (
+        <div className="flex gap-2 mb-4" onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={handleSaveEdit}
+            className="px-3 py-1.5 bg-[#CDF056] text-[#0a1a2e] text-sm font-medium rounded hover:bg-[#b8d84a]"
+          >
+            Save
+          </button>
+          <button
+            onClick={handleCancelEdit}
+            className="px-3 py-1.5 bg-[#2d3a4a] text-gray-400 text-sm rounded hover:bg-[#3a4a5a]"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* Collaboration Role Badge */}
       {book.is_collaboration && book.collaborator_role && (
@@ -152,6 +247,7 @@ function BookCard({ book, onSelect }: BookCardProps) {
 
 export default function Books() {
   const navigate = useNavigate();
+  const notification = useNotification();
   const [books, setBooks] = useState<BookSummary[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -194,6 +290,24 @@ export default function Books() {
     }
   };
 
+  const handleUpdateBook = async (id: number, data: { title: string; core_topic: string }) => {
+    const res = await updateBook(id, { title: data.title, core_topic: data.core_topic || null });
+    if (res.success && res.data) {
+      setBooks((prev) => prev.map((b) => (b.id === id ? { ...b, title: res.data!.title, core_topic: res.data.core_topic } : b)));
+    } else {
+      notification.error(res.error || "Failed to update book");
+    }
+  };
+
+  const handleDeleteBook = async (id: number) => {
+    const res = await deleteBook(id);
+    if (res.success) {
+      setBooks((prev) => prev.filter((b) => b.id !== id));
+    } else {
+      notification.error(res.error || "Failed to delete book");
+    }
+  };
+
   useEffect(() => {
     loadBooks();
   }, []);
@@ -222,7 +336,7 @@ export default function Books() {
           </div>
           <button
             onClick={handleCreateBook}
-            className="bg-[#CDF056] border hover:bg-[#f59e0b] text-[#0a1a2e] font-semibold px-6 py-2  flex items-center gap-2 transition-colors"
+            className="bg-[#CDF056] rounded-xl border hover:bg-[#f59e0b] text-[#0a1a2e] font-semibold px-6 py-2  flex items-center gap-2 transition-colors"
           >
             <svg className="w-5 h-5 " fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -242,9 +356,15 @@ export default function Books() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               {books.map((book) => (
-                <BookCard key={book.id} book={book} onSelect={(id) => {
-                  navigate(`/book/${id}`);
-                }} />
+                <BookCard
+                  key={book.id}
+                  book={book}
+                  onSelect={(id) => navigate(`/book/${id}`)}
+                  onDelete={handleDeleteBook}
+                  onUpdate={handleUpdateBook}
+                  canDelete={!book.is_collaboration}
+                  canEdit={!book.is_collaboration}
+                />
               ))}
             </div>
           )}

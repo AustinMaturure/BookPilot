@@ -2,26 +2,101 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "prosemirror-state";
-import { Node as PMNode } from "prosemirror-model";
+import { Node as PMNode, Fragment, Slice } from "prosemirror-model";
 import { DecorationSet, Decoration } from "prosemirror-view";
 import StarterKit from "@tiptap/starter-kit";
-import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import Highlight from "@tiptap/extension-highlight";
 import type { BookOutline } from "./position";
-import { updateTalkingPoint, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, updateContentChangeStepJson, getCollaborationState, createTalkingPoint, createSection, reviewChapter, getChapterComments, getGlossaryTerms, createGlossaryTerm, deleteGlossaryTerm, updateSpellingConvention, type CommentType, type Collaborator, type ContentChange, type GlossaryTerm } from "../utils/api";
+import { useNotification } from "../contexts/NotificationContext";
+import { updateTalkingPoint, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, updateContentChangeStepJson, updateContentChangeComment, getCurrentUser, getCollaborationState, createTalkingPoint, createSection, reviewChapter, getGlossaryTerms, createGlossaryTerm, deleteGlossaryTerm, updateSpellingConvention, type CommentType, type Collaborator, type ContentChange, type GlossaryTerm } from "../utils/api";
 import ChapterAssetsModal from "./ChapterAssetsModal";
 import ChapterAssetsPanel from "./ChapterAssetsPanel";
 import { CollaborationExtension } from "./CollaborationExtension";
 import { StepCaptureExtension } from "./StepCaptureExtension";
-import { Mapping, Step } from "prosemirror-transform";
-import { parseSteps, getPreviewFragments, findTextRangeInDoc } from "../utils/stepUtils";
+import { Mapping } from "prosemirror-transform";
+import { parseSteps, getPreviewFragments, findTextRangeNormalized, remapStepsToBase, extractSliceText } from "../utils/stepUtils";
 import card2 from "../assets/Branding/Card2.png"
 import "./Editor.css";
 import SpeechToText from "../utils/speech-to-text.tsx";
 import SpeechRecognition from 'react-speech-recognition';
+import {
+  BoldIcon,
+  ItalicIcon,
+  StrikethroughIcon,
+  CodeBracketIcon,
+  ListBulletIcon,
+  NumberedListIcon,
+  LinkIcon,
+  LinkSlashIcon,
+  H1Icon,
+  H2Icon,
+  H3Icon,
+  ChatBubbleLeftIcon,
+} from "@heroicons/react/24/outline";
  
+
+/** Convert HTML to readable display text, preserving bullets and numbered lists */
+const htmlToDisplayText = (html: string): string => {
+  if (!html || typeof html !== "string") return "";
+  if (typeof document === "undefined") {
+    return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  }
+  const div = document.createElement("div");
+  div.innerHTML = html;
+
+  function process(node: Node): string {
+    if (node.nodeType === Node.TEXT_NODE) return (node.textContent || "").replace(/\s+/g, " ");
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const tag = (node as Element).tagName?.toLowerCase();
+    const children = Array.from(node.childNodes);
+
+    if (tag === "ul") {
+      return children
+        .filter((c) => c.nodeType === Node.ELEMENT_NODE && (c as Element).tagName?.toLowerCase() === "li")
+        .map((li) => "• " + (li.textContent || "").trim().replace(/\s+/g, " "))
+        .join("\n");
+    }
+    if (tag === "ol") {
+      return children
+        .filter((c) => c.nodeType === Node.ELEMENT_NODE && (c as Element).tagName?.toLowerCase() === "li")
+        .map((li, i) => `${i + 1}. ` + (li.textContent || "").trim().replace(/\s+/g, " "))
+        .join("\n");
+    }
+    if (tag === "br") return "\n";
+    if (tag === "p") return children.map(process).join("").trim() + "\n";
+    if (tag === "div") {
+      const blockTags = new Set(["ul", "ol", "p", "div"]);
+      const parts: string[] = [];
+      for (let i = 0; i < children.length; i++) {
+        const c = children[i];
+        if (c.nodeType === Node.ELEMENT_NODE && blockTags.has((c as Element).tagName?.toLowerCase() || "")) {
+          if (parts.length > 0) parts.push("\n");
+          parts.push(process(c));
+        } else {
+          parts.push(process(c));
+        }
+      }
+      return parts.join("");
+    }
+    return children.map(process).join("");
+  }
+
+  const result = process(div).replace(/\n{3,}/g, "\n\n").trim();
+  return result || (div.textContent || "").replace(/\s+/g, " ").trim();
+};
+
+/** Extract plain text from HTML for anchor matching (ProseMirror doc has text only, no tags) */
+const htmlToPlainTextForMatching = (html: string): string => {
+  if (!html || typeof html !== "string") return "";
+  if (typeof document === "undefined") {
+    return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  }
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  return (div.textContent || div.innerText || "").replace(/\s+/g, " ").trim();
+};
 
 // Get selected text using multiple methods for cross-browser compatibility
 const getSelectedText = (): string => {
@@ -89,47 +164,50 @@ type TiptapEditorProps = {
   canonicalContent?: string;
   shadowSuggestions?: Array<{ id: number; step_json: any[] | any }>;
   pendingHighlightStepJsons?: any[];
+  aiCoachHighlights?: Array<{ anchor: string; suggested_replacement?: string }>;
+  highlightPreviewMode?: "collaborators" | "ai";
+  decorationRefreshTrigger?: number;
+  onHighlightClick?: (params: {
+    mode: "ai" | "collaborator";
+    anchorOrDeletedText: string;
+    suggestedOrInsertedText?: string;
+    talkingPointId: number;
+    clientX: number;
+    clientY: number;
+  }) => void;
 };
 
 const pendingStepPreviewKey = new PluginKey("pendingStepPreview");
+
+/** Escape key moves cursor out of link so typing continues without link formatting. */
+const LinkExitExtension = Extension.create({
+  name: "linkExit",
+  addKeyboardShortcuts() {
+    return {
+      Escape: ({ editor }) => {
+        const { state } = editor;
+        const { $from } = state.selection;
+        const linkMark = state.schema.marks.link;
+        if (!linkMark) return false;
+        const inLink = $from.marks().some((m) => m.type === linkMark);
+        if (!inLink) return false;
+        const didExtend = editor.commands.extendMarkRange("link");
+        if (!didExtend) return false;
+        const linkEnd = editor.state.selection.to;
+        editor.commands.setTextSelection(linkEnd);
+        return true;
+      },
+    };
+  },
+});
 const pendingShadowHighlightKey = new PluginKey("pendingShadowHighlight");
+const aiCoachHighlightKey = new PluginKey("aiCoachHighlight");
 
 const extractInsertedTextFromRawStep = (rawStep: any): string => {
   if (!rawStep) return "";
   if (typeof rawStep.insertedText === "string") return rawStep.insertedText;
-  const extract = (node: any): string => {
-    if (!node) return "";
-    if (node.type === "text" && node.text) return node.text;
-    if (Array.isArray(node.content)) return node.content.map(extract).join("");
-    return "";
-  };
-  const content = rawStep?.slice?.content;
-  if (Array.isArray(content)) return content.map(extract).join("");
-  return "";
+  return extractSliceText(rawStep);
 };
-
-const mapStepPositionsToBase = (
-  schema: any,
-  rawStep: any,
-  mapping: Mapping
-): { from: number | null; to: number | null } => {
-  const from = typeof rawStep?.from === "number" ? rawStep.from : null;
-  const to = typeof rawStep?.to === "number" ? rawStep.to : null;
-  if (from === null || to === null) return { from, to };
-
-  try {
-    const step = Step.fromJSON(schema, rawStep);
-    const inverse = mapping.invert();
-    const baseFrom = inverse.map(from, -1);
-    const baseTo = inverse.map(to, 1);
-    mapping.appendMap(step.getMap());
-    return { from: baseFrom, to: baseTo };
-  } catch (e) {
-    // Fallback to raw positions if step parsing fails
-    return { from, to };
-  }
-};
-
 
 const PendingShadowHighlightExtension = Extension.create({
   name: "pendingShadowHighlight",
@@ -172,29 +250,33 @@ const PendingShadowHighlightExtension = Extension.create({
 
               console.log(`[PendingShadowHighlight] Received new meta with ${batches.length} batches, docSize=${docSize}`);
 
-              batches.forEach((batch: any[], batchIdx: number) => {
-                const batchMapping = new Mapping();
-                (batch || []).forEach((rawStep: any, stepIdx: number) => {
-                  if (!rawStep || typeof rawStep !== "object") return;
+              batches.forEach((batch: any[]) => {
+                const parsedSteps = parseSteps(tr.doc.type.schema, batch || []);
+                const remappedSteps = remapStepsToBase(parsedSteps);
+                let lastDeletionRange: { from: number; to: number } | null = null;
 
-                  const mappedPos = mapStepPositionsToBase(tr.doc.type.schema, rawStep, batchMapping);
-                  const from = mappedPos.from;
-                  const to = mappedPos.to;
-                  const deletedText = rawStep.deletedText || null;
-                  const insertedText = extractInsertedTextFromRawStep(rawStep) || null;
+                remappedSteps.forEach((step: any) => {
+                  const from = typeof step.from === "number" ? step.from : null;
+                  const to = typeof step.to === "number" ? step.to : null;
+                  const deletedText = step.deletedText || null;
+                  const insertedText = step.insertedText || null;
 
                   let baseFrom = typeof from === "number" ? from : 1;
                   let baseTo = typeof to === "number" ? to : baseFrom;
 
-                  console.log(`[PendingShadowHighlight] Batch ${batchIdx} Step ${stepIdx}: from=${from}, to=${to}, deletedText="${(deletedText || '').substring(0, 30)}...", insertedText="${(insertedText || '').substring(0, 30)}..."`);
+                  const hasSlice = step.slice && (step.slice.size ?? 0) > 0;
+                  const isDeletion = deletedText && typeof deletedText === "string";
+                  const looksLikeDeletion = baseFrom < baseTo && !hasSlice;
 
-                  // Handle deletion as a SEPARATE tracked change
-                  if (deletedText && typeof deletedText === "string") {
-                    const safeFrom = Math.max(0, Math.min(baseFrom, docSize));
-                    const safeTo = Math.max(0, Math.min(baseTo, docSize));
-                    console.log(`[PendingShadowHighlight] Deletion check: baseFrom=${baseFrom}, baseTo=${baseTo}, safeFrom=${safeFrom}, safeTo=${safeTo}, docSize=${docSize}`);
+                  if (isDeletion || looksLikeDeletion) {
+                    let delFrom = baseFrom;
+                    let delTo = baseTo;
+                    if (delFrom > delTo) [delFrom, delTo] = [delTo, delFrom];
+                    let safeFrom = Math.max(0, Math.min(delFrom, docSize));
+                    let safeTo = Math.min(docSize, Math.max(0, Math.min(delTo, docSize)));
+                    const maxRange = 1200;
+                    if (safeTo - safeFrom > maxRange) safeTo = Math.min(safeFrom + maxRange, docSize);
                     if (safeFrom < safeTo) {
-                      console.log(`[PendingShadowHighlight] Creating deletion decoration at ${safeFrom}-${safeTo}`);
                       decorations.push(
                         Decoration.inline(safeFrom, safeTo, {
                           class: "collaborator-pending-deletion",
@@ -202,23 +284,24 @@ const PendingShadowHighlightExtension = Extension.create({
                       );
                       trackedChanges.push({
                         type: "deletion",
-                        text: deletedText,
+                        text: deletedText || "",
                         trackedFrom: safeFrom,
                         trackedTo: safeTo,
                       });
+                      lastDeletionRange = { from: safeFrom, to: safeTo };
                       baseTo = safeTo;
-                    } else {
-                      console.log(`[PendingShadowHighlight] Deletion SKIPPED: safeFrom=${safeFrom} >= safeTo=${safeTo}`);
                     }
                   }
 
-                  // Handle insertion as a SEPARATE tracked change
                   if (insertedText && typeof insertedText === "string") {
-                    // For replacements (deletion + insertion), position widget AFTER the deletion
-                    // so it visually appears after the strikethrough text
-                    // For pure insertions (no deletion), position at the insertion point
-                    const isReplacement = deletedText && typeof deletedText === "string";
-                    const insertPos = isReplacement ? baseTo : baseFrom;
+                    const isReplacement = isDeletion;
+                    // Use baseFrom so insertion appears at start of replaced range. baseTo would place it one char too far right.
+                    let insertPos = baseFrom;
+                    // Fallback for delete-then-insert: when insertion comes after a deletion in the batch
+                    // and mapped position is invalid or out of bounds, use start of last deletion range
+                    if (!isReplacement && lastDeletionRange && (insertPos < 1 || insertPos > docSize)) {
+                      insertPos = lastDeletionRange.from;
+                    }
                     const clampedPos = Math.max(1, Math.min(insertPos, docSize));
 
                     console.log(`[PendingShadowHighlight] Creating insertion widget at ${clampedPos}`);
@@ -292,61 +375,22 @@ const PendingShadowHighlightExtension = Extension.create({
                 console.log(`[PendingShadowHighlight] Change ${idx} (${type}): ${trackedFrom}-${trackedTo} -> ${mappedFrom}-${mappedTo}`);
 
                 if (type === "deletion") {
-                  const safeFrom = Math.max(0, Math.min(mappedFrom, docSize));
-                  const safeTo = Math.max(0, Math.min(mappedTo, docSize));
-
-                  // Verify text at mapped position still matches
-                  let textAtPos = "";
-                  try {
-                    if (safeFrom < safeTo && safeTo <= docSize) {
-                      textAtPos = tr.doc.textBetween(safeFrom, safeTo, "");
-                    }
-                  } catch (e) {
-                    // Ignore
-                  }
-
-                  const textMatches = textAtPos === text;
-                  console.log(`[PendingShadowHighlight] Deletion ${idx}: text at ${safeFrom}-${safeTo}="${textAtPos.substring(0, 20)}...", expected="${text.substring(0, 20)}...", matches=${textMatches}`);
-
-                  if (safeFrom < safeTo && textMatches) {
+                  let safeFrom = Math.max(0, Math.min(mappedFrom, docSize));
+                  let safeTo = Math.min(docSize, Math.max(0, Math.min(mappedTo, docSize)));
+                  const maxRange = 1200;
+                  if (safeTo - safeFrom > maxRange) safeTo = Math.min(safeFrom + maxRange, docSize);
+                  if (safeFrom < safeTo) {
                     decorations.push(
                       Decoration.inline(safeFrom, safeTo, {
                         class: "collaborator-pending-deletion",
                       })
                     );
-                  } else if (safeFrom < safeTo) {
-                    // Text doesn't match - try to find it using text search
-                    const foundRange = findTextRangeInDoc(tr.doc as any, text, safeFrom);
-                    if (foundRange) {
-                      console.log(`[PendingShadowHighlight] Deletion ${idx}: found via text search at ${foundRange.from}-${foundRange.to}`);
-                      decorations.push(
-                        Decoration.inline(foundRange.from, Math.min(foundRange.to, docSize), {
-                          class: "collaborator-pending-deletion",
-                        })
-                      );
-                      // Update tracked position to found location
-                      updatedTrackedChanges.push({
-                        type: "deletion",
-                        text,
-                        trackedFrom: foundRange.from,
-                        trackedTo: foundRange.to,
-                      });
-                      return; // Skip the default push below
-                    } else {
-                      console.log(`[PendingShadowHighlight] Deletion ${idx}: text not found, using mapped position anyway`);
-                      decorations.push(
-                        Decoration.inline(safeFrom, safeTo, {
-                          class: "collaborator-pending-deletion",
-                        })
-                      );
-                    }
                   }
-
                   updatedTrackedChanges.push({
                     type: "deletion",
                     text,
-                    trackedFrom: mappedFrom,
-                    trackedTo: mappedTo,
+                    trackedFrom: safeFrom,
+                    trackedTo: safeTo,
                   });
                 } else if (type === "insertion") {
                   // For insertions, map with right association to stay after insertions at this point
@@ -376,6 +420,12 @@ const PendingShadowHighlightExtension = Extension.create({
                 }
               });
 
+              decorations.forEach((dec, i) => {
+                const from = (dec as any).from;
+                const to = (dec as any).to ?? from;
+                console.log(`[PendingShadowHighlight] apply (docChanged): final decoration ${i}: from=${from}, to=${to}`);
+              });
+
               return {
                 stepJsonBatches: prev.stepJsonBatches,
                 trackedChanges: updatedTrackedChanges,
@@ -384,6 +434,129 @@ const PendingShadowHighlightExtension = Extension.create({
             }
 
             // Non-editing transaction - keep state as-is
+            return prev;
+          },
+        },
+        props: {
+          decorations(state) {
+            return this.getState(state)?.decorations;
+          },
+        },
+      }),
+    ];
+  },
+});
+
+/** AI Coach Review highlights - shows anchor + suggested replacement like collaborator pending changes */
+const AiCoachHighlightExtension = Extension.create({
+  name: "aiCoachHighlight",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: aiCoachHighlightKey,
+        state: {
+          init() {
+            return {
+              highlights: [] as Array<{ anchor: string; suggested_replacement?: string; from: number; to: number; insertPos?: number }>,
+              decorations: DecorationSet.empty,
+            };
+          },
+          apply(tr, prev) {
+            const meta = tr.getMeta(aiCoachHighlightKey);
+            if (meta !== undefined) {
+              const items = Array.isArray(meta) ? meta : [];
+              const doc = tr.doc;
+              const decorations: Decoration[] = [];
+              const highlights: typeof prev.highlights = [];
+
+              const maxRange = 1200;
+              for (const item of items) {
+                const anchor = (item?.anchor || "").trim();
+                if (!anchor) continue;
+                const range = findTextRangeNormalized(doc as any, anchor);
+                if (!range) continue;
+                let rFrom = range.from;
+                let rTo = range.to;
+                if (rTo - rFrom > maxRange) rTo = Math.min(rFrom + maxRange, doc.content.size);
+
+                highlights.push({
+                  anchor,
+                  suggested_replacement: item.suggested_replacement,
+                  from: rFrom,
+                  to: rTo,
+                  insertPos: rTo,
+                });
+
+                decorations.push(
+                  Decoration.inline(rFrom, rTo, { class: "ai-coach-suggestion" })
+                );
+
+                if (item.suggested_replacement && typeof item.suggested_replacement === "string") {
+                  const suggestedText = item.suggested_replacement;
+                  decorations.push(
+                    Decoration.widget(
+                      rTo,
+                      () => {
+                        const span = document.createElement("span");
+                        span.className = "ai-coach-suggested-insertion";
+                        span.textContent = suggestedText;
+                        span.setAttribute("contenteditable", "false");
+                        return span;
+                      },
+                      { side: 1 }
+                    )
+                  );
+                }
+              }
+
+              return {
+                highlights,
+                decorations: DecorationSet.create(doc, decorations),
+              };
+            }
+
+            if (tr.docChanged && prev.highlights.length > 0) {
+              const doc = tr.doc;
+              const decorations: Decoration[] = [];
+              const updated: typeof prev.highlights = [];
+              const maxRange = 1200;
+
+              for (const h of prev.highlights) {
+                const range = findTextRangeNormalized(doc as any, h.anchor);
+                if (!range) continue;
+                let rFrom = range.from;
+                let rTo = range.to;
+                if (rTo - rFrom > maxRange) rTo = Math.min(rFrom + maxRange, doc.content.size);
+
+                decorations.push(
+                  Decoration.inline(rFrom, rTo, { class: "ai-coach-suggestion" })
+                );
+
+                if (h.suggested_replacement) {
+                  const sug = h.suggested_replacement;
+                  decorations.push(
+                    Decoration.widget(
+                      rTo,
+                      () => {
+                        const span = document.createElement("span");
+                        span.className = "ai-coach-suggested-insertion";
+                        span.textContent = sug;
+                        span.setAttribute("contenteditable", "false");
+                        return span;
+                      },
+                      { side: 1 }
+                    )
+                  );
+                }
+                updated.push({ ...h, from: rFrom, to: rTo });
+              }
+
+              return {
+                highlights: updated,
+                decorations: DecorationSet.create(doc, decorations),
+              };
+            }
+
             return prev;
           },
         },
@@ -447,23 +620,30 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
               }> = [];
 
               const rawSteps = Array.isArray(meta) ? meta : [];
-              const batchMapping = new Mapping();
-              rawSteps.forEach((rawStep: any) => {
-                if (!rawStep || typeof rawStep !== "object") return;
+              const parsedSteps = parseSteps(tr.doc.type.schema, rawSteps);
+              const remappedSteps = remapStepsToBase(parsedSteps);
+              let lastDeletionRangePreview: { from: number; to: number } | null = null;
 
-                const mappedPos = mapStepPositionsToBase(tr.doc.type.schema, rawStep, batchMapping);
-                const from = mappedPos.from;
-                const to = mappedPos.to;
-                const deletedText = rawStep.deletedText || null;
-                const insertedText = extractInsertedTextFromRawStep(rawStep) || null;
+              remappedSteps.forEach((step: any) => {
+                const from = typeof step.from === "number" ? step.from : null;
+                const to = typeof step.to === "number" ? step.to : null;
+                const deletedText = step.deletedText || null;
+                const insertedText = step.insertedText || null;
 
                 let baseFrom = typeof from === "number" ? from : 1;
                 let baseTo = typeof to === "number" ? to : baseFrom;
+                const hasSlice = step.slice && (step.slice.size ?? 0) > 0;
+                const isDeletion = deletedText && typeof deletedText === "string";
+                const looksLikeDeletion = baseFrom < baseTo && !hasSlice;
 
-                // Handle deletion as SEPARATE tracked change
-                if (deletedText && typeof deletedText === "string") {
-                  const safeFrom = Math.max(0, Math.min(baseFrom, docSize));
-                  const safeTo = Math.max(0, Math.min(baseTo, docSize));
+                if (isDeletion || looksLikeDeletion) {
+                  let delFrom = baseFrom;
+                  let delTo = baseTo;
+                  if (delFrom > delTo) [delFrom, delTo] = [delTo, delFrom];
+                  let safeFrom = Math.max(0, Math.min(delFrom, docSize));
+                  let safeTo = Math.min(docSize, Math.max(0, Math.min(delTo, docSize)));
+                  const maxRange = 1200;
+                  if (safeTo - safeFrom > maxRange) safeTo = Math.min(safeFrom + maxRange, docSize);
                   if (safeFrom < safeTo) {
                     decorations.push(
                       Decoration.inline(safeFrom, safeTo, {
@@ -472,19 +652,22 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
                     );
                     trackedChanges.push({
                       type: "deletion",
-                      text: deletedText,
+                      text: deletedText || "",
                       trackedFrom: safeFrom,
                       trackedTo: safeTo,
                     });
+                    lastDeletionRangePreview = { from: safeFrom, to: safeTo };
                     baseTo = safeTo;
                   }
                 }
 
-                // Handle insertion as SEPARATE tracked change
                 if (insertedText && typeof insertedText === "string") {
-                  // For replacements, position widget AFTER the deletion
-                  const isReplacement = deletedText && typeof deletedText === "string";
-                  const insertPos = isReplacement ? baseTo : baseFrom;
+                  const isReplacement = isDeletion;
+                  // Use baseFrom so insertion appears at start of replaced range. baseTo would place it one char too far right.
+                  let insertPos = baseFrom;
+                  if (!isReplacement && lastDeletionRangePreview && (insertPos < 1 || insertPos > docSize)) {
+                    insertPos = lastDeletionRangePreview.from;
+                  }
                   const clampedPos = Math.max(1, Math.min(insertPos, docSize));
                   decorations.push(
                     Decoration.widget(
@@ -544,57 +727,22 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
                 const mappedTo = tr.mapping.map(trackedTo, 1);
 
                 if (type === "deletion") {
-                  const safeFrom = Math.max(0, Math.min(mappedFrom, docSize));
-                  const safeTo = Math.max(0, Math.min(mappedTo, docSize));
-
-                  // Verify text at mapped position still matches
-                  let textAtPos = "";
-                  try {
-                    if (safeFrom < safeTo && safeTo <= docSize) {
-                      textAtPos = tr.doc.textBetween(safeFrom, safeTo, "");
-                    }
-                  } catch (e) {
-                    // Ignore
-                  }
-
-                  const textMatches = textAtPos === text;
-
-                  if (safeFrom < safeTo && textMatches) {
+                  let safeFrom = Math.max(0, Math.min(mappedFrom, docSize));
+                  let safeTo = Math.min(docSize, Math.max(0, Math.min(mappedTo, docSize)));
+                  const maxRange = 1200;
+                  if (safeTo - safeFrom > maxRange) safeTo = Math.min(safeFrom + maxRange, docSize);
+                  if (safeFrom < safeTo) {
                     decorations.push(
                       Decoration.inline(safeFrom, safeTo, {
                         class: "owner-pending-deletion",
                       })
                     );
-                  } else if (safeFrom < safeTo) {
-                    // Text doesn't match - try to find it using text search
-                    const foundRange = findTextRangeInDoc(tr.doc as any, text, safeFrom);
-                    if (foundRange) {
-                      decorations.push(
-                        Decoration.inline(foundRange.from, Math.min(foundRange.to, docSize), {
-                          class: "owner-pending-deletion",
-                        })
-                      );
-                      updatedTrackedChanges.push({
-                        type: "deletion",
-                        text,
-                        trackedFrom: foundRange.from,
-                        trackedTo: foundRange.to,
-                      });
-                      return; // Skip the default push below
-                    } else {
-                      decorations.push(
-                        Decoration.inline(safeFrom, safeTo, {
-                          class: "owner-pending-deletion",
-                        })
-                      );
-                    }
                   }
-
                   updatedTrackedChanges.push({
                     type: "deletion",
                     text,
-                    trackedFrom: mappedFrom,
-                    trackedTo: mappedTo,
+                    trackedFrom: safeFrom,
+                    trackedTo: safeTo,
                   });
                 } else if (type === "insertion") {
                   const insertPos = Math.max(1, Math.min(tr.mapping.map(trackedFrom, 1), docSize));
@@ -642,6 +790,35 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
   },
 });
 
+/** Applies heading only to the selected text (splits block if needed). Falls back to block-level toggle when selection is empty. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyHeadingToSelection(editor: any, level: 1 | 2 | 3) {
+  if (!editor) return;
+  const { state } = editor;
+  const { from, to } = state.selection;
+  const schema = state.schema;
+  const headingType = schema.nodes.heading;
+  if (!headingType) return;
+
+  // When selection is empty (cursor only), do nothing - headings apply only to highlighted text
+  if (from === to) return;
+
+  // Selection is non-empty: replace selected content with a heading block containing that content
+  const selectedSlice = state.doc.slice(from, to);
+  if (!selectedSlice.content.size) return;
+
+  try {
+    const headingNode = headingType.create({ level }, selectedSlice.content);
+    const slice = new Slice(Fragment.from(headingNode), 0, 0);
+    const tr = state.tr.replaceRange(from, to, slice);
+    editor.view.dispatch(tr);
+    editor.commands.focus();
+  } catch {
+    // Fallback to block-level toggle if replace fails
+    editor.chain().focus().toggleHeading({ level }).run();
+  }
+}
+
 function TiptapEditor({
   content,
   onUpdate,
@@ -661,6 +838,10 @@ function TiptapEditor({
   canonicalContent: _canonicalContent,
   shadowSuggestions: _shadowSuggestions = [],
   pendingHighlightStepJsons = [],
+  aiCoachHighlights = [],
+  highlightPreviewMode = "collaborators",
+  decorationRefreshTrigger = 0,
+  onHighlightClick,
 }: TiptapEditorProps & { isReadOnly?: boolean; hasPendingChanges?: boolean; onPendingChangeClick?: () => void }) {
   const isUpdatingRef = useRef(false);
   const isInitialMountRef = useRef(true);
@@ -717,11 +898,13 @@ function TiptapEditor({
         heading: {
           levels: [1, 2, 3],
         },
-      }),
-      Link.configure({
-        openOnClick: false,
-        HTMLAttributes: {
-          class: "text-blue-600 underline",
+        link: {
+          openOnClick: true,
+          HTMLAttributes: {
+            target: "_blank",
+            rel: "noopener noreferrer",
+            class: "text-blue-600 underline",
+          },
         },
       }),
       Image,
@@ -734,6 +917,7 @@ function TiptapEditor({
           class: isCollaborator && hasChanges ? "bg-yellow-200 border-b-2 border-yellow-400" : "bg-yellow-200",
         },
       }),
+      LinkExitExtension,
     ];
 
     // Use collaboration extension if enabled
@@ -755,6 +939,7 @@ function TiptapEditor({
     }
 
     baseExtensions.push(PendingShadowHighlightExtension);
+    baseExtensions.push(AiCoachHighlightExtension);
     baseExtensions.push(PendingStepPreviewExtension.configure({
       previewEnabled: !isCollaborator,
     }));
@@ -764,6 +949,7 @@ function TiptapEditor({
 
   const editor = useEditor({
     editable: !isReadOnly,
+    shouldRerenderOnTransaction: true,
     extensions,
     content: cleanContent,
     // Collaborators can edit, but their edits become suggestions (not direct changes)
@@ -863,28 +1049,63 @@ function TiptapEditor({
   // Only dispatch decorations when data actually changes from the backend
   // Use a ref to track the previous value and avoid re-dispatching during editing
   const prevPendingHighlightRef = useRef<string>("");
+  const prevAiCoachHighlightsRef = useRef<string>("");
+
+  const prevPreviewStepJsonRef = useRef<string>("");
+
+  // Reset refs when mode toggles so data effects don't skip on coincidental serialized match
+  useEffect(() => {
+    prevPendingHighlightRef.current = "";
+    prevAiCoachHighlightsRef.current = "";
+    prevPreviewStepJsonRef.current = "";
+  }, [highlightPreviewMode]);
+
+  // Reset AI coach highlight ref when "Go to" triggers a refresh so decorations re-apply
+  useEffect(() => {
+    prevAiCoachHighlightsRef.current = "";
+  }, [decorationRefreshTrigger]);
+
+  // When highlight preview mode toggles, ALWAYS dispatch to both plugins so the inactive one clears
+  // and the active one shows. This fixes stale preview when toggling between Collaborators and AI Coach.
   useEffect(() => {
     if (!editor) return;
-
-    // Serialize to compare if data actually changed
-    const currentSerialized = JSON.stringify(pendingHighlightStepJsons || []);
-    if (currentSerialized === prevPendingHighlightRef.current) {
-      return; // No change, skip dispatch
+    const shadowExt = editor.extensionManager.extensions.find((ext: any) => ext.name === "pendingShadowHighlight");
+    const aiExt = editor.extensionManager.extensions.find((ext: any) => ext.name === "aiCoachHighlight");
+    if (shadowExt) {
+      const shadowData = highlightPreviewMode === "collaborators" ? (pendingHighlightStepJsons || []) : [];
+      editor.view.dispatch(editor.state.tr.setMeta(pendingShadowHighlightKey, shadowData));
     }
+    if (aiExt) {
+      const aiData = highlightPreviewMode === "ai" ? (aiCoachHighlights || []) : [];
+      editor.view.dispatch(editor.state.tr.setMeta(aiCoachHighlightKey, aiData));
+    }
+  }, [editor, highlightPreviewMode, pendingHighlightStepJsons, aiCoachHighlights]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const currentSerialized = JSON.stringify(pendingHighlightStepJsons || []);
+    if (currentSerialized === prevPendingHighlightRef.current && highlightPreviewMode !== "ai") return;
     prevPendingHighlightRef.current = currentSerialized;
-
-    // Reset editing state when new data comes in
     isEditingRef.current = false;
-
     const extension = editor.extensionManager.extensions.find((ext: any) => ext.name === "pendingShadowHighlight");
-    if (extension) {
+    if (extension && highlightPreviewMode === "collaborators") {
       const tr = editor.state.tr.setMeta(pendingShadowHighlightKey, pendingHighlightStepJsons || []);
       editor.view.dispatch(tr);
     }
-  }, [editor, pendingHighlightStepJsons]);
+  }, [editor, pendingHighlightStepJsons, highlightPreviewMode]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const currentSerialized = JSON.stringify(aiCoachHighlights || []);
+    if (currentSerialized === prevAiCoachHighlightsRef.current && highlightPreviewMode !== "collaborators") return;
+    prevAiCoachHighlightsRef.current = currentSerialized;
+    const ext = editor.extensionManager.extensions.find((ext: any) => ext.name === "aiCoachHighlight");
+    if (ext && highlightPreviewMode === "ai") {
+      editor.view.dispatch(editor.state.tr.setMeta(aiCoachHighlightKey, aiCoachHighlights || []));
+    }
+  }, [editor, aiCoachHighlights, highlightPreviewMode, decorationRefreshTrigger]);
 
   // Refresh preview decorations when pending changes update (owner view)
-  const prevPreviewStepJsonRef = useRef<string>("");
   useEffect(() => {
     if (!editor) return;
 
@@ -897,7 +1118,7 @@ function TiptapEditor({
 
     const tr = editor.state.tr.setMeta(pendingStepPreviewKey, previewStepJson);
     editor.view.dispatch(tr);
-  }, [editor, pendingChanges, previewStepJson]);
+  }, [editor, pendingChanges, previewStepJson, highlightPreviewMode]);
 
   // Refresh decorations when pending changes update
   useEffect(() => {
@@ -929,110 +1150,169 @@ function TiptapEditor({
     <div className="border border-gray-300 rounded-lg overflow-hidden bg-white">
       {/* Toolbar */}
       <div className="border-b border-gray-200 bg-gray-50 px-4 py-2.5 flex items-center gap-2 flex-wrap">
+        {/* Headings */}
         <div className="flex items-center gap-1 border-r border-gray-300 pr-2 mr-2">
           <button
-            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-            className={`p-1.5 rounded hover:bg-gray-200 ${editor.isActive("heading", { level: 1 }) ? "bg-gray-200" : ""
-              }`}
-            title="Heading 1"
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => applyHeadingToSelection(editor, 1)}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("heading", { level: 1 }) ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
+            title="Heading 1 (applies to selected text only)"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 19h14M5 5h14M5 12h14" />
-            </svg>
+            <H1Icon className="w-4 h-4" />
           </button>
           <button
-            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-            className={`p-1.5 rounded hover:bg-gray-200 ${editor.isActive("heading", { level: 2 }) ? "bg-gray-200" : ""
-              }`}
-            title="Heading 2"
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => applyHeadingToSelection(editor, 2)}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("heading", { level: 2 }) ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
+            title="Heading 2 (applies to selected text only)"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 19h14M5 5h14M5 12h14" />
-            </svg>
+            <H2Icon className="w-4 h-4" />
           </button>
           <button
-            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-            className={`p-1.5 rounded hover:bg-gray-200 ${editor.isActive("heading", { level: 3 }) ? "bg-gray-200" : ""
-              }`}
-            title="Heading 3"
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => applyHeadingToSelection(editor, 3)}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("heading", { level: 3 }) ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
+            title="Heading 3 (applies to selected text only)"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 19h14M5 5h14M5 12h14" />
-            </svg>
+            <H3Icon className="w-4 h-4" />
           </button>
         </div>
 
+        {/* Text formatting */}
         <div className="flex items-center gap-1 border-r border-gray-300 pr-2 mr-2">
           <button
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => editor.chain().focus().toggleBold().run()}
-            className={`p-1.5 rounded hover:bg-gray-200 ${editor.isActive("bold") ? "bg-gray-200" : ""}`}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("bold") ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
             title="Bold"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 4h8a4 4 0 014 4v8a4 4 0 01-4 4H6a4 4 0 01-4-4V8a4 4 0 014-4z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6" />
-            </svg>
+            <BoldIcon className="w-4 h-4" />
           </button>
           <button
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => editor.chain().focus().toggleItalic().run()}
-            className={`p-1.5 rounded hover:bg-gray-200 ${editor.isActive("italic") ? "bg-gray-200" : ""}`}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("italic") ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
             title="Italic"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-            </svg>
+            <ItalicIcon className="w-4 h-4" />
           </button>
           <button
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-            className={`p-1.5 rounded hover:bg-gray-200 ${editor.isActive("bulletList") ? "bg-gray-200" : ""}`}
-            title="Bullet List"
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => editor.chain().focus().toggleStrike().run()}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("strike") ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
+            title="Strikethrough"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 6h13M8 12h13m-7 6h7M3 6h.01M3 12h.01M3 18h.01" />
-            </svg>
+            <StrikethroughIcon className="w-4 h-4" />
           </button>
           <button
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            className={`p-1.5 rounded hover:bg-gray-200 ${editor.isActive("orderedList") ? "bg-gray-200" : ""}`}
-            title="Numbered List"
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => editor.chain().focus().toggleCode().run()}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("code") ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
+            title="Inline Code"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
-            </svg>
+            <CodeBracketIcon className="w-4 h-4" />
           </button>
         </div>
 
+        {/* Lists */}
+        <div className="flex items-center gap-1 border-r border-gray-300 pr-2 mr-2">
+          <button
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("bulletList") ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
+            title="Bullet List"
+          >
+            <ListBulletIcon className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("orderedList") ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
+            title="Numbered List"
+          >
+            <NumberedListIcon className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("blockquote") ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
+            title="Blockquote"
+          >
+            <ChatBubbleLeftIcon className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Links */}
         <div className="flex items-center gap-1">
           <button
+            type="button"
+            disabled={isCollaborator}
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               const url = window.prompt("Enter URL:");
               if (url) {
-                editor.chain().focus().setLink({ href: url }).run();
+                const href = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+                editor.chain().focus().setLink({ href }).run();
               }
             }}
-            className={`p-1.5 rounded hover:bg-gray-200 ${editor.isActive("link") ? "bg-gray-200" : ""}`}
+            className={`p-1.5 rounded transition-colors duration-150 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed ${editor.isActive("link") ? "bg-[#cdf056] hover:bg-[#b8e04a]" : ""}`}
             title="Link"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-            </svg>
+            <LinkIcon className="w-4 h-4" />
           </button>
           <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => editor.chain().focus().unsetLink().run()}
-            disabled={!editor.isActive("link")}
+            disabled={isCollaborator || !editor.isActive("link")}
             className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
             title="Remove Link"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-            </svg>
+            <LinkSlashIcon className="w-4 h-4" />
           </button>
         </div>
       </div>
 
       {/* Editor Content */}
       <div
-        onClick={() => {
+        onClick={(e) => {
+          const el = e.target as HTMLElement;
+          const highlightEl = el.closest(".ai-coach-suggestion, .ai-coach-suggested-insertion, .collaborator-pending-deletion, .collaborator-pending-insertion, .owner-pending-deletion, .owner-pending-insertion");
+          if (highlightEl && onHighlightClick && talkingPointId != null) {
+            e.preventDefault();
+            e.stopPropagation();
+            const text = (highlightEl.textContent || "").trim().replace(/\s+/g, " ");
+            const isSuggested = highlightEl.classList.contains("ai-coach-suggested-insertion") || highlightEl.classList.contains("collaborator-pending-insertion") || highlightEl.classList.contains("owner-pending-insertion");
+            onHighlightClick({
+              mode: highlightPreviewMode === "ai" ? "ai" : "collaborator",
+              anchorOrDeletedText: isSuggested ? "" : text,
+              suggestedOrInsertedText: isSuggested ? text : undefined,
+              talkingPointId,
+              clientX: e.clientX,
+              clientY: e.clientY,
+            });
+            return;
+          }
           if (hasPendingChanges && onPendingChangeClick) {
             onPendingChangeClick();
           }
@@ -1045,6 +1325,7 @@ function TiptapEditor({
 }
 
 export default function Editor({ outline, bookId, onOutlineUpdate, isCollaboration = false, collaboratorRole = null }: EditorProps) {
+  const notification = useNotification();
   const [selectedItem, setSelectedItem] = useState<SelectedItem>(null);
   const [generatingTpId, setGeneratingTpId] = useState<number | null>(null);
   const [expandedChapters, setExpandedChapters] = useState<Record<number, boolean>>({});
@@ -1054,8 +1335,31 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [selectedAssetIds, setSelectedAssetIds] = useState<number[]>([]);
   const [activeRightView, setActiveRightView] = useState<"comments" | "chat" | "changes" | "moreActions" | "review" | "glossary">("comments");
   const [isReviewing, setIsReviewing] = useState(false);
-  const [reviewResult, setReviewResult] = useState<{ review_items_found: number; comments_created: number; comments: Array<{ id: number; talking_point_id: number; category: string }> } | null>(null);
-  const [chapterComments, setChapterComments] = useState<Array<CommentType & { talking_point_id: number; talking_point_text: string; section_title: string }>>([]);
+  type AiSuggestion = {
+    talking_point_id: number;
+    talking_point_text: string;
+    section_title: string;
+    category: string;
+    anchor: string;
+    suggested_change: string;
+    comment: string;
+    options?: string;
+    glossary_suggestion?: string;
+  };
+  const [reviewResult, setReviewResult] = useState<{ review_items_found: number; suggestions: AiSuggestion[] } | null>(null);
+  const [dismissedAiSuggestions, setDismissedAiSuggestions] = useState<Set<string>>(new Set());
+  const [highlightedReviewSuggestionKey, setHighlightedReviewSuggestionKey] = useState<string | null>(null);
+  const [highlightCommentPopover, setHighlightCommentPopover] = useState<
+    | { type: "ai"; suggestion: AiSuggestion; x: number; y: number }
+    | { type: "collaborator"; change: ContentChange; x: number; y: number }
+    | null
+  >(null);
+
+  const suggestionKey = (s: AiSuggestion) =>
+    `${s.talking_point_id}|${(s.anchor || "").replace(/\s+/g, " ").trim()}|${(s.suggested_change || "").replace(/\s+/g, " ").trim()}`;
+  const displayedAiSuggestions = (reviewResult?.suggestions ?? []).filter(
+    (s) => !dismissedAiSuggestions.has(suggestionKey(s))
+  );
   // Glossary state
   const [glossaryTerms, setGlossaryTerms] = useState<GlossaryTerm[]>([]);
   const [isLoadingGlossary, setIsLoadingGlossary] = useState(false);
@@ -1093,19 +1397,25 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [isLoadingChanges, setIsLoadingChanges] = useState(false);
   const [hasAutoOpenedChanges, setHasAutoOpenedChanges] = useState(false);
   const [focusedChangeTpId, setFocusedChangeTpId] = useState<number | null>(null);
+  const [highlightPreviewMode, setHighlightPreviewMode] = useState<"collaborators" | "ai">("collaborators");
+  const [decorationRefreshTrigger, setDecorationRefreshTrigger] = useState(0);
   const isBookOwner = !isCollaboration;
   // Track original content for change detection (for collaborators)
   const [originalContents, setOriginalContents] = useState<Record<number, string>>({});
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState<Record<number, boolean>>({});
-  const currentUserId = (window as any).currentUserId ?? null;
+  const [applyChangeComments, setApplyChangeComments] = useState<Record<number, string>>({});
+  const [editingChangeCommentId, setEditingChangeCommentId] = useState<number | null>(null);
+  const [editingChangeCommentText, setEditingChangeCommentText] = useState("");
+  const [currentUserId, setCurrentUserId] = useState<number | null>((window as any).currentUserId ?? null);
 
-  const escapeHtml = (value: string): string =>
-    value
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
+  useEffect(() => {
+    getCurrentUser().then((result) => {
+      if (result.success && result.data) {
+        const id = (result.data as any).user_id ?? (result.data as any).id;
+        if (id != null) setCurrentUserId(id);
+      }
+    });
+  }, []);
 
   const getChangeSteps = (change: ContentChange) => {
     const editorRef = editorRefs.current[change.talking_point]?.current;
@@ -1141,28 +1451,19 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
       console.log(`[getChangePreviewText] Raw step keys:`, Object.keys(raw));
 
-      // Check for stored deletedText (from compression) - ACCUMULATE all deletions
-      if (raw.deletedText && typeof raw.deletedText === "string" && raw.deletedText.trim()) {
+      // Check for stored deletedText (from compression) - preserve whitespace
+      if (raw.deletedText && typeof raw.deletedText === "string") {
         deletedParts.push(raw.deletedText);
       }
 
-      // Check for stored insertedText (from compression) - ACCUMULATE all insertions
-      if (raw.insertedText && typeof raw.insertedText === "string" && raw.insertedText.trim()) {
+      // Check for stored insertedText - preserve all whitespace (spaces, newlines)
+      if (raw.insertedText && typeof raw.insertedText === "string") {
         insertedParts.push(raw.insertedText);
       }
-      // Fallback: extract from slice content
+      // Fallback: extract from slice content (handles hardBreak, preserves whitespace)
       else if (raw.slice?.content && Array.isArray(raw.slice.content)) {
-        const extractText = (content: any[]): string => {
-          return content
-            .map((node: any) => {
-              if (node.type === "text" && node.text) return node.text;
-              if (node.content && Array.isArray(node.content)) return extractText(node.content);
-              return "";
-            })
-            .join("");
-        };
-        const sliceText = extractText(raw.slice.content);
-        if (sliceText.trim()) {
+        const sliceText = extractInsertedTextFromRawStep(raw);
+        if (sliceText) {
           insertedParts.push(sliceText);
         }
       }
@@ -1187,24 +1488,6 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       ? preview.deleted
       : "";
     return { deleted: cleanPreviewDeleted, inserted: preview.inserted };
-  };
-
-  const getChangePreviewHtml = (change: ContentChange): string => {
-    const diff = getChangePreviewText(change);
-    if (!diff.deleted && !diff.inserted) return "";
-
-    const parts: string[] = [];
-    if (diff.deleted) {
-      parts.push(
-        `<span class="pending-step-deletion" data-pending-preview="deletion">${escapeHtml(diff.deleted)}</span>`
-      );
-    }
-    if (diff.inserted) {
-      parts.push(
-        `<span class="pending-step-insertion" data-pending-preview="insertion">${escapeHtml(diff.inserted)}</span>`
-      );
-    }
-    return parts.join(" ").trim();
   };
 
   const getMappedRangeFromStepJson = (doc: any, schema: any, stepJson: any): { from: number; to: number } | null => {
@@ -1489,23 +1772,6 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     loadComments();
   }, [currentTalkingPointId, selectedSection, bookId]);
 
-  // Load chapter comments when review tab is opened
-  useEffect(() => {
-    const loadChapterComments = async () => {
-      if (activeRightView === "review" && selectedItem && bookId) {
-        try {
-          const result = await getChapterComments(selectedItem.chapterId);
-          if (result.success && result.data) {
-            setChapterComments(result.data);
-          }
-        } catch (error) {
-          console.error("Error loading chapter comments:", error);
-        }
-      }
-    };
-    loadChapterComments();
-  }, [activeRightView, selectedItem, bookId]);
-
   // Load glossary terms when glossary tab is opened
   useEffect(() => {
     const loadGlossary = async () => {
@@ -1526,11 +1792,54 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     loadGlossary();
   }, [activeRightView, bookId]);
 
+  // Scroll to the specific AI Coach review item when "View in AI Coach Review" is clicked from popover
+  useEffect(() => {
+    if (activeRightView === "review" && highlightedReviewSuggestionKey) {
+      const timer = setTimeout(() => {
+        const el = document.querySelector(`[data-suggestion-key="${CSS.escape(highlightedReviewSuggestionKey)}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("ring-2", "ring-[#CDF056]", "ring-opacity-50", "ring-offset-2", "ring-offset-[#0f172a]");
+          setTimeout(() => {
+            el.classList.remove("ring-2", "ring-[#CDF056]", "ring-opacity-50", "ring-offset-2", "ring-offset-[#0f172a]");
+          }, 2000);
+        }
+        setHighlightedReviewSuggestionKey(null);
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [activeRightView, highlightedReviewSuggestionKey]);
+
   // Clear review results when chapter changes
   useEffect(() => {
     setReviewResult(null);
-    setChapterComments([]);
+    setDismissedAiSuggestions(new Set());
   }, [selectedItem?.chapterId]);
+
+  // Auto-run AI coach review in background when entering a chapter (book owner or editor only)
+  useEffect(() => {
+    if (!selectedItem?.chapterId || !bookId) return;
+    if (!isBookOwner && collaboratorRole !== "editor") return;
+
+    let cancelled = false;
+    const runReview = async () => {
+      setIsReviewing(true);
+      try {
+        const result = await reviewChapter(selectedItem!.chapterId);
+        if (cancelled) return;
+        if (result.success && result.data) {
+          setReviewResult(result.data);
+          setDismissedAiSuggestions(new Set());
+        }
+      } catch (error) {
+        if (!cancelled) console.error("Error auto-reviewing chapter:", error);
+      } finally {
+        if (!cancelled) setIsReviewing(false);
+      }
+    };
+    runReview();
+    return () => { cancelled = true; };
+  }, [selectedItem?.chapterId, bookId, isBookOwner, collaboratorRole]);
 
   // Function to load changes (reusable for refresh)
   // For owners: Load changes for ALL talking points in the section
@@ -1611,6 +1920,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       const pendingCount = contentChanges.filter(c => !c.status || c.status === "pending").length;
       if (pendingCount > 0 && activeRightView === "comments") {
         setActiveRightView("changes");
+        setHighlightPreviewMode("collaborators");
         setHasAutoOpenedChanges(true);
       }
     }
@@ -1678,6 +1988,123 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   };
 
   /**
+   * handleAcceptAiSuggestion - Apply AI Coach suggested replacement to the talking point.
+   * Only allowed when there are no pending collaborator changes for that talking point.
+   * Works with ephemeral suggestions (no DB persistence).
+   */
+  const handleAcceptAiSuggestion = async (suggestion: AiSuggestion) => {
+    if (suggestion.suggested_change == null || !bookId || !onOutlineUpdate) return;
+
+    const tpId = suggestion.talking_point_id;
+
+    // Block if there are pending collaborator changes - must accept/reject those first
+    const pendingForTp = contentChanges.filter(
+      (c) => c.talking_point === tpId && (!c.status || c.status === "pending")
+    );
+    if (pendingForTp.length > 0) {
+      // Navigate to section containing this talking point, open changes tab, notify user
+      let targetChapterId: number | null = null;
+      let targetSectionId: number | null = null;
+      let targetSectionTitle: string | null = null;
+      if (outline?.chapters) {
+        for (const ch of outline.chapters) {
+          for (const sec of ch.sections || []) {
+            for (const tp of sec.talking_points || []) {
+              if (tp.id === tpId) {
+                targetChapterId = ch.id ?? null;
+                targetSectionId = sec.id ?? null;
+                targetSectionTitle = sec.title;
+                break;
+              }
+            }
+            if (targetSectionId) break;
+          }
+          if (targetSectionId) break;
+        }
+      }
+      if (targetChapterId && targetSectionId && targetSectionTitle && selectedItem?.sectionId !== targetSectionId) {
+        handleSectionClick(targetChapterId, targetSectionId, targetSectionTitle);
+      }
+      setCurrentTalkingPointId(tpId);
+      setFocusedChangeTpId(tpId);
+      setHighlightPreviewMode("collaborators");
+      setActiveRightView("changes");
+      notification.info(
+        "This talking point has pending suggestions from collaborators. Please accept or reject those changes first before applying AI Coach suggestions.\n\nOpening the Changes tab.",
+        { duration: 8000 }
+      );
+      return;
+    }
+
+    const anchorRaw = (suggestion.anchor || "").trim();
+    if (!anchorRaw) return;
+    // Use plain text for matching - anchor from AI may be HTML but ProseMirror doc has text only
+    const anchor = htmlToPlainTextForMatching(anchorRaw) || anchorRaw;
+
+    // Navigate to the section containing this talking point if not already there
+    let targetChapterId: number | null = null;
+    let targetSectionId: number | null = null;
+    let targetSectionTitle: string | null = null;
+    if (outline?.chapters) {
+      for (const ch of outline.chapters) {
+        for (const sec of ch.sections || []) {
+          for (const tp of sec.talking_points || []) {
+            if (tp.id === tpId) {
+              targetChapterId = ch.id ?? null;
+              targetSectionId = sec.id ?? null;
+              targetSectionTitle = sec.title;
+              break;
+            }
+          }
+          if (targetSectionId) break;
+        }
+        if (targetSectionId) break;
+      }
+    }
+    if (targetChapterId && targetSectionId && targetSectionTitle && selectedItem?.sectionId !== targetSectionId) {
+      handleSectionClick(targetChapterId, targetSectionId, targetSectionTitle);
+    }
+    setCurrentTalkingPointId(tpId);
+
+    // Wait for the section to render and editor to be available
+    await new Promise((r) => setTimeout(r, 350));
+
+    const editorRef = editorRefs.current[tpId]?.current;
+    if (!editorRef) {
+      notification.error("Could not find the editor. Please try again.");
+      return;
+    }
+
+    // Use ProseMirror doc to find the anchor (handles whitespace; anchor is normalized to plain text)
+    const range = findTextRangeNormalized(editorRef.state.doc as any, anchor);
+    if (!range) {
+      notification.error(
+        "Could not find the text to replace. It may have been edited already, or the suggestion may not match the current content."
+      );
+      return;
+    }
+
+    try {
+      // Replace at document level - insertContentAt with range replaces the span
+      editorRef.chain().focus().insertContentAt({ from: range.from, to: range.to }, suggestion.suggested_change).run();
+      const modifiedContent = editorRef.getHTML();
+      handleTpContentChange(tpId, modifiedContent);
+
+      const res = await updateTalkingPoint(tpId, { content: modifiedContent });
+      if (res.success) {
+        const updatedBook = await fetchBook(bookId);
+        if (updatedBook.success) onOutlineUpdate(updatedBook.data);
+        setDismissedAiSuggestions((prev) => new Set([...prev, suggestionKey(suggestion)]));
+      } else {
+        notification.error(res.error || "Failed to save changes.");
+      }
+    } catch (error) {
+      console.error("Error applying AI suggestion:", error);
+      notification.error("Failed to apply suggestion.");
+    }
+  };
+
+  /**
    * handleSuggestEdit - Creates a suggestion from captured ProseMirror steps
    * 
    * HARD CONSTRAINTS:
@@ -1692,7 +2119,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     const capturedSteps = (window as any).__CAPTURED_STEPS_BY_TP__?.[tpId];
 
     if (!capturedSteps || capturedSteps.length === 0) {
-      alert("No changes detected. Please make some edits in the editor first, then click Suggest Edit.");
+      notification.info("No changes detected. Please make some edits in the editor first, then click Suggest Edit.");
       return;
     }
 
@@ -1734,7 +2161,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           type Hunk = { origStart: number; origEnd: number; finalStart: number; finalEnd: number; deleted: string; inserted: string };
           const hunks: Hunk[] = [];
 
-          const MIN_MATCH = 10; // Minimum matching chars to consider a "stable" region
+          const MIN_MATCH = 5; // Minimum matching chars; use longest match to reduce spurious splits
 
           let origIdx = 0;
           let finalIdx = 0;
@@ -1755,19 +2182,20 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               break;
             }
 
-            // Found a difference - now find where texts sync up again
+            // Found a difference - find sync point using LONGEST match (not first match)
+            // This better detects single contiguous deletion+insertion when they overlap
             const hunkOrigStart = origIdx;
             const hunkFinalStart = finalIdx;
 
-            // Look for next matching region of at least MIN_MATCH characters
-            let foundMatch = false;
             let bestOrigEnd = originalText.length;
             let bestFinalEnd = finalText.length;
+            let bestMatchLen = 0;
 
-            // Search for sync point
-            for (let searchOrig = origIdx; searchOrig <= originalText.length - MIN_MATCH && !foundMatch; searchOrig++) {
-              for (let searchFinal = finalIdx; searchFinal <= finalText.length - MIN_MATCH && !foundMatch; searchFinal++) {
-                // Check if we have MIN_MATCH matching characters
+            const searchLimitOrig = Math.min(origIdx + 500, originalText.length); // Limit search range
+            const searchLimitFinal = Math.min(finalIdx + 500, finalText.length);
+
+            for (let searchOrig = origIdx; searchOrig <= searchLimitOrig - MIN_MATCH; searchOrig++) {
+              for (let searchFinal = finalIdx; searchFinal <= searchLimitFinal - MIN_MATCH; searchFinal++) {
                 let matchLen = 0;
                 while (
                   searchOrig + matchLen < originalText.length &&
@@ -1776,13 +2204,19 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                 ) {
                   matchLen++;
                 }
-
-                if (matchLen >= MIN_MATCH) {
+                // Prefer longest match to reduce spurious splits (single contiguous change)
+                if (matchLen >= MIN_MATCH && matchLen > bestMatchLen) {
+                  bestMatchLen = matchLen;
                   bestOrigEnd = searchOrig;
                   bestFinalEnd = searchFinal;
-                  foundMatch = true;
                 }
               }
+            }
+
+            const foundMatch = bestMatchLen >= MIN_MATCH;
+            if (!foundMatch) {
+              bestOrigEnd = originalText.length;
+              bestFinalEnd = finalText.length;
             }
 
             // Create hunk for this change region
@@ -1881,13 +2315,15 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     }
 
     try {
-      // Send compressed step_json
+      const comment = (applyChangeComments[tpId] || "").trim() || undefined;
       const result = await createContentChange({
         talking_point_id: tpId,
         step_json: stepsToSubmit,
+        comment,
       });
 
       if (result.success) {
+        setApplyChangeComments((prev) => ({ ...prev, [tpId]: "" }));
         // Clear captured steps for this talking point after successful submission
         if ((window as any).__CAPTURED_STEPS_BY_TP__) {
           (window as any).__CAPTURED_STEPS_BY_TP__[tpId] = [];
@@ -1967,14 +2403,15 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         }
 
         // Open the changes tab after creating suggestion
+        setHighlightPreviewMode("collaborators");
         setActiveRightView("changes");
       } else {
         console.error("❌ Failed to create suggestion:", result);
-        alert("Failed to create suggestion. Please try again.");
+        notification.error("Failed to create suggestion. Please try again.");
       }
     } catch (error) {
       console.error("Error suggesting edit:", error);
-      alert("Error creating suggestion. Please try again.");
+      notification.error("Error creating suggestion. Please try again.");
     }
   };
 
@@ -1992,7 +2429,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
     // FIX: Prevent double application - check if already approved
     if (change.status === "approved") {
-      alert("This suggestion has already been approved.");
+      notification.info("This suggestion has already been approved.");
       return;
     }
 
@@ -2001,14 +2438,14 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
     if (!stepJsonArray || !Array.isArray(stepJsonArray) || stepJsonArray.length === 0) {
       console.error("❌ No step_json found - this suggestion cannot be applied");
-      alert("This suggestion cannot be applied - no step data available.");
+      notification.error("This suggestion cannot be applied - no step data available.");
       return;
     }
 
     if (isBookOwner && change.status === "pending") {
       const oldestPendingId = getOldestPendingChangeId(change.talking_point);
       if (oldestPendingId && change.id !== oldestPendingId) {
-        alert("Please approve earlier changes for this talking point first.");
+        notification.info("Please approve earlier changes for this talking point first.");
         return;
       }
     }
@@ -2017,7 +2454,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       const editorRef = editorRefs.current[changeTpId]?.current;
       if (!editorRef) {
         console.error("❌ Editor not found for talking point:", changeTpId);
-        alert("Editor not found. Please refresh the page.");
+        notification.error("Editor not found. Please refresh the page.");
         return;
       }
 
@@ -2029,7 +2466,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       // Ensure we have a valid document state
       if (!state || !state.doc) {
         console.error("❌ Invalid editor state");
-        alert("Editor state is invalid. Please refresh the page.");
+        notification.error("Editor state is invalid. Please refresh the page.");
         return;
       }
 
@@ -2039,14 +2476,14 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         try {
           const baseDoc = PMNode.fromJSON(state.schema, baseDocJson);
           if (!baseDoc.eq(state.doc)) {
-            alert(
+            notification.warning(
               "This suggestion was created on an older version of the document. Please refresh to rebase before approving."
             );
             return;
           }
         } catch (error) {
           console.warn("[Approve] Invalid base_doc_json; cannot safely apply steps.", error);
-          alert("This suggestion cannot be applied safely. Please refresh and try again.");
+          notification.error("This suggestion cannot be applied safely. Please refresh and try again.");
           return;
         }
       }
@@ -2099,7 +2536,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             const docSize = tempDoc.content.size;
             if (mappedAny.from < 0 || mappedAny.to < 0 || mappedAny.from > docSize || mappedAny.to > docSize) {
               console.error(`Step ${i + 1} out of bounds after mapping! from=${mappedAny.from}, to=${mappedAny.to}, docSize=${docSize}`);
-              alert("Change incompatible");
+              notification.error("Change incompatible");
               return;
             }
           }
@@ -2116,7 +2553,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           const stepResult = tr.step(mappedStep);
           if (stepResult === null) {
             console.error(`Step ${i + 1} tr.step returned null`);
-            alert("Change incompatible");
+            notification.error("Change incompatible");
             return;
           }
 
@@ -2127,7 +2564,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           console.error("Step index:", i, "Total steps:", steps.length);
           console.error("Current document size:", tempDoc.content.size);
           console.error("Step JSON:", JSON.stringify(stepJsonArray[i], null, 2));
-          alert(`Change incompatible: ${error?.message || "validation failed"}`);
+          notification.error(`Change incompatible: ${error?.message || "validation failed"}`);
           return;
         }
       }
@@ -2154,7 +2591,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
       if (!saveResult.success) {
         console.error("Failed to save updated content:", saveResult);
-        alert("Steps were applied but failed to save content. Please refresh and try again.");
+        notification.error("Steps were applied but failed to save content. Please refresh and try again.");
         (editorRef as any).__stepsJustApplied = false;
         return;
       }
@@ -2259,11 +2696,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         }
       } else {
         console.error("Failed to approve change:", result);
-        alert("Steps were applied and saved, but failed to update approval status. Please refresh the page.");
+        notification.warning("Steps were applied and saved, but failed to update approval status. Please refresh the page.");
       }
     } catch (error) {
       console.error("❌ Error applying change:", error);
-      alert("Error applying change. Please try again.");
+      notification.error("Error applying change. Please try again.");
     }
   };
 
@@ -2291,21 +2728,29 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
 
   const handleTpBlur = async (tpId: number) => {
-    // Only auto-save for book owners. Collaborators must use "Suggest Edit" button
-    if (!isBookOwner) {
+    if (isBookOwner) {
+      // Book owners: direct save
+      const editorRef = editorRefs.current[tpId]?.current;
+      if (editorRef && bookId) {
+        const content = editorRef.getHTML();
+        const res = await updateTalkingPoint(tpId, { content });
+        if (res.success && onOutlineUpdate) {
+          const updatedBook = await fetchBook(bookId);
+          if (updatedBook.success) {
+            onOutlineUpdate(updatedBook.data);
+          }
+        }
+      }
       return;
     }
 
-    const editorRef = editorRefs.current[tpId]?.current;
-    if (editorRef && bookId) {
-      const content = editorRef.getHTML();
-      const res = await updateTalkingPoint(tpId, { content });
-      if (res.success && onOutlineUpdate) {
-        const updatedBook = await fetchBook(bookId);
-        if (updatedBook.success) {
-          onOutlineUpdate(updatedBook.data);
-        }
-      }
+    // Collaborators (editors): auto-submit as suggestion when leaving the field
+    const hasEdits = !!hasUnsavedChanges[tpId];
+    const capturedStepsForTp = (window as any).__CAPTURED_STEPS_BY_TP__?.[tpId];
+    const hasCapturedSteps = capturedStepsForTp && capturedStepsForTp.length > 0;
+
+    if (hasEdits && hasCapturedSteps && bookId) {
+      await handleSuggestEdit(tpId);
     }
   };
 
@@ -2342,7 +2787,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [isListening, setIsListening] = useState(false);
 
   useEffect(() => {
-    setBrowserSupportsSpeechRecognition(SpeechRecognition.browserSupportsSpeechRecognition());
+    // Web Speech API requires secure context (HTTPS) in production
+    const supports = SpeechRecognition.browserSupportsSpeechRecognition();
+    const secure = typeof window !== 'undefined' && window.isSecureContext;
+    setBrowserSupportsSpeechRecognition(supports && secure);
   }, []);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2376,18 +2824,18 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           const updatedChapter = sectionResult.data.chapters?.find((ch: any) => ch.id === chapterId);
           targetSection = updatedChapter?.sections?.[0];
         } else {
-          alert("Failed to create section. Please try again.");
+          notification.error("Failed to create section. Please try again.");
           return;
         }
       } catch (error) {
         console.error("Error creating section:", error);
-        alert("Failed to create section. Please try again.");
+        notification.error("Failed to create section. Please try again.");
         return;
       }
     }
 
     if (!targetSection?.id) {
-      alert("Could not find or create a section. Please try again.");
+      notification.error("Could not find or create a section. Please try again.");
       return;
     }
 
@@ -2416,7 +2864,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       }
     } catch (error) {
       console.error("Error generating talking points from chapter:", error);
-      alert("Failed to generate talking points. Please try again.");
+      notification.error("Failed to generate talking points. Please try again.");
     }
   };
 
@@ -2527,7 +2975,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const handleAddComment = async () => {
     // Viewers cannot add comments
     if (collaboratorRole === "viewer") {
-      alert("Viewers cannot add comments. Please ask the book owner to change your role.");
+      notification.info("Viewers cannot add comments. Please ask the book owner to change your role.");
       return;
     }
 
@@ -2850,14 +3298,14 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       }
     } catch (error) {
       console.error("Error updating collaborator role:", error);
-      alert("Failed to update collaborator role. Please try again.");
+      notification.error("Failed to update collaborator role. Please try again.");
     }
   };
 
   const handleQuickAction = async (action: "shorten" | "strengthen" | "clarify" | "expand" | "remove_repetition" | "regenerate" | "improve_flow" | "split_paragraph" | "turn_into_bullets" | "add_transition" | "rewrite_heading" | "suggest_subheading" | "give_example") => {
     // Only editors can perform quick actions
     if (!isBookOwner && collaboratorRole !== "editor") {
-      alert("Only editors can perform this action. Please ask the book owner to change your role.");
+      notification.info("Only editors can perform this action. Please ask the book owner to change your role.");
       return;
     }
 
@@ -3043,27 +3491,26 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
   return (
     <div className="flex h-full bg-white relative">
-      {/* Chapter Assets Panel - Left Side (when open for chapters) */}
-      {assetsModalOpen && currentChapterId && bookId && outline && (() => {
-        const chapter = outline.chapters?.find((ch) => ch.id === currentChapterId);
-        return chapter ? (
-          <ChapterAssetsPanel
-            isOpen={assetsModalOpen}
-            onClose={() => {
-              setAssetsModalOpen(false);
-              setCurrentChapterId(null);
-            }}
-            bookId={bookId}
-            chapterId={currentChapterId}
-            chapterTitle={chapter.title}
-          />
-        ) : null;
-      })()}
-
-      {/* Left Sidebar - Contents/Outline (hidden when chapter assets modal is open) */}
-      <div className={`mt-13 bg-[#011b2d] border-r border-gray-200 overflow-y-auto transition-all ${assetsModalOpen && currentChapterId ? 'w-0 hidden' : 'w-64'}`}>
-        <div className="p-4">
-          <h3 className="text-sm font-semibold text-gray-400 mb-4">CONTENTS</h3>
+      {/* Left Sidebar - Contents/Outline OR Chapter Assets (contained in same column) */}
+      <div className="mt-13 w-64 flex flex-col border-r border-gray-200 overflow-hidden shrink-0 bg-[#011b2d]">
+        {assetsModalOpen && currentChapterId && bookId && outline ? (() => {
+          const chapter = outline.chapters?.find((ch) => ch.id === currentChapterId);
+          return chapter ? (
+            <ChapterAssetsPanel
+              isOpen={assetsModalOpen}
+              onClose={() => {
+                setAssetsModalOpen(false);
+                setCurrentChapterId(null);
+              }}
+              bookId={bookId}
+              chapterId={currentChapterId}
+              chapterTitle={chapter.title}
+            />
+          ) : null;
+        })() : (
+        <div className="flex-1 overflow-y-auto bg-[#011b2d]">
+          <div className="p-4">
+            <h3 className="text-sm font-semibold text-gray-400 mb-4">CONTENTS</h3>
           <hr className="border-gray-400" />
           <div className="space-y-1">
             {outline?.chapters?.map((chapter) => {
@@ -3141,7 +3588,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               );
             })}
           </div>
+          </div>
         </div>
+        )}
       </div>
 
       {/* Middle Editor Area */}
@@ -3150,9 +3599,37 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           <>
             {/* Editor Header */}
             <div className="border-b border-gray-200 px-6 py-4 bg-white shrink-0">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-2xl font-bold text-gray-900 mb-2">{selectedSection.title}</h2>
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-2xl font-bold text-gray-900 truncate">{selectedSection.title}</h2>
+                <div className="flex items-center gap-1 p-0.5 bg-gray-100 rounded-lg shrink-0">
+                  <button
+                    onClick={() => {
+                      setHighlightPreviewMode("collaborators");
+                      if (isBookOwner || collaboratorRole === "editor") setActiveRightView("changes");
+                    }}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                      highlightPreviewMode === "collaborators"
+                        ? "bg-white text-gray-900 shadow-sm"
+                        : "text-gray-600 hover:text-gray-900"
+                    }`}
+                    title="Show collaborator suggestions in editor"
+                  >
+                    Collaborators
+                  </button>
+                  <button
+                    onClick={() => {
+                      setHighlightPreviewMode("ai");
+                      if (isBookOwner || collaboratorRole === "editor") setActiveRightView("review");
+                    }}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                      highlightPreviewMode === "ai"
+                        ? "bg-white text-gray-900 shadow-sm"
+                        : "text-gray-600 hover:text-gray-900"
+                    }`}
+                    title="Show AI Coach suggestions in editor"
+                  >
+                    AI Coach
+                  </button>
                 </div>
               </div>
             </div>
@@ -3181,9 +3658,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     // Only show submitted pending changes - preview appears after "Suggest Edit" is clicked
                     // CRITICAL: Keep as batches (array of arrays) - each content change is relative to base doc
                     // Cumulative offset only applies WITHIN a batch, not BETWEEN batches
-                    const pendingHighlightStepJsons = shadowSuggestions.map((s) =>
+                    const pendingHighlightStepJsonsRaw = shadowSuggestions.map((s) =>
                       Array.isArray(s.step_json) ? s.step_json : [s.step_json]
                     );
+                    const pendingHighlightStepJsons = highlightPreviewMode === "collaborators" ? pendingHighlightStepJsonsRaw : [];
                     const isGenerating = generatingTpId === tpId;
                     const hasPendingChanges = isBookOwner && contentChanges.some(
                       (change) => change.talking_point === tpId && (!change.status || change.status === "pending")
@@ -3194,7 +3672,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                         return contentChanges.find((c) => c.id === oldestPendingId) || null;
                       })()
                       : null;
-                    const previewStepJson = previewChange ? (previewChange as any).step_json : null;
+                    const previewStepJson = highlightPreviewMode === "collaborators" && previewChange
+                      ? (previewChange as any).step_json
+                      : null;
 
                     return (
                       <div
@@ -3243,7 +3723,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               disabled={isGenerating || !tp.text || (!isBookOwner && collaboratorRole !== "editor")}
                               className={`px-3 py-1.5 text-sm rounded-lg flex items-center gap-2 ${!isBookOwner && collaboratorRole !== "editor"
                                 ? "bg-gray-300 text-gray-500 cursor-not-allowed opacity-50"
-                                : "bg-[#CDF056] text-white hover:bg-[#CDF056]/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                                : "bg-[#CDF056] text-white  hover:bg-[#CDF056]/70 disabled:opacity-50 disabled:cursor-not-allowed"
                                 }`}
                               title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can generate text" : "Generate Text"}
                             >
@@ -3306,10 +3786,29 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             previewStepJson={previewStepJson}
                             shadowSuggestions={shadowSuggestions}
                             pendingHighlightStepJsons={pendingHighlightStepJsons}
+                            highlightPreviewMode={highlightPreviewMode}
+                            decorationRefreshTrigger={decorationRefreshTrigger}
+                            aiCoachHighlights={highlightPreviewMode === "ai" ? (() => {
+                              const items = displayedAiSuggestions
+                                .filter((s) => s.talking_point_id === tpId && s.anchor)
+                                .map((s) => ({
+                                  anchor: htmlToPlainTextForMatching(s.anchor) || (s.anchor || "").trim(),
+                                  suggested_replacement: s.suggested_change ?? undefined,
+                                }));
+                              // Deduplicate by normalized anchor - one highlight per unique text span
+                              const seen = new Set<string>();
+                              return items.filter((h) => {
+                                const key = h.anchor.replace(/\s+/g, " ").trim();
+                                if (seen.has(key)) return false;
+                                seen.add(key);
+                                return true;
+                              });
+                            })() : []}
                             onPendingChangeClick={() => {
                               if (!isBookOwner || !hasPendingChanges) return;
                               setCurrentTalkingPointId(tpId);
                               setFocusedChangeTpId(tpId);
+                              setHighlightPreviewMode("collaborators");
                               setActiveRightView("changes");
                               const oldestPendingId = getOldestPendingChangeId(tpId);
                               const changeToHighlight = contentChanges.find((c) => c.id === oldestPendingId);
@@ -3317,29 +3816,63 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                 highlightChangeInEditor(changeToHighlight);
                               }
                             }}
+                            onHighlightClick={(params) => {
+                              const { mode, anchorOrDeletedText, suggestedOrInsertedText, talkingPointId: tpId, clientX, clientY } = params;
+                              if (mode === "ai") {
+                                const norm = (t: string) => (t || "").replace(/\s+/g, " ").trim();
+                                const match = displayedAiSuggestions.find(
+                                  (s) =>
+                                    s.talking_point_id === tpId &&
+                                    ((anchorOrDeletedText && norm(htmlToPlainTextForMatching(s.anchor || "")) === norm(anchorOrDeletedText)) ||
+                                      (suggestedOrInsertedText && norm(s.suggested_change || "") === norm(suggestedOrInsertedText)))
+                                );
+                                if (match) {
+                                  setHighlightCommentPopover({ type: "ai", suggestion: match, x: clientX, y: clientY });
+                                }
+                              } else {
+                                const changesForTp = contentChanges.filter((c) => c.talking_point === tpId && (!c.status || c.status === "pending"));
+                                const match = changesForTp.find((c) => {
+                                  const steps = Array.isArray((c as any).step_json) ? (c as any).step_json : [(c as any).step_json];
+                                  for (const raw of steps || []) {
+                                    if (!raw || typeof raw !== "object") continue;
+                                    const deleted = (raw.deletedText || "").replace(/\s+/g, " ").trim();
+                                    const inserted = extractInsertedTextFromRawStep(raw).replace(/\s+/g, " ").trim();
+                                    if (anchorOrDeletedText && deleted === anchorOrDeletedText) return true;
+                                    if (suggestedOrInsertedText && inserted === suggestedOrInsertedText) return true;
+                                  }
+                                  return false;
+                                });
+                                if (match) {
+                                  setHighlightCommentPopover({ type: "collaborator", change: match, x: clientX, y: clientY });
+                                }
+                              }
+                            }}
                           />
-                          {/* Suggest Edit Button - for editors only */}
+                          {/* Suggest Edit / Apply Changes button - for editors only */}
                           {!isBookOwner && collaboratorRole === "editor" && (() => {
-                            // FIX: Only show button if there are actual edits (content differs from original)
                             const hasEdits = !!hasUnsavedChanges[tpId];
-                            // FIX: Get steps for this specific talking point only
                             const capturedStepsForTp = (window as any).__CAPTURED_STEPS_BY_TP__?.[tpId];
                             const hasCapturedSteps = capturedStepsForTp && capturedStepsForTp.length > 0;
 
-                            // Show button only if there are both edits AND captured steps for THIS talking point
                             if (!hasEdits || !hasCapturedSteps) return null;
 
                             return (
-                              <div className="mt-2 flex justify-end">
-                                <button
-                                  onClick={() => handleSuggestEdit(tpId)}
-                                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 text-sm font-medium"
-                                >
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                  </svg>
-                                  Suggest Edit ({capturedStepsForTp.length} steps)
-                                </button>
+                              <div className="mt-2 space-y-2">
+                               
+                                <div className="flex justify-between items-center gap-3">
+                                  <span className="text-xs text-gray-500">
+                                    Changes are saved automatically when you leave the field
+                                  </span>
+                                  <button
+                                    onClick={() => handleSuggestEdit(tpId)}
+                                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 text-sm font-medium"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                    </svg>
+                                    Apply Changes ({capturedStepsForTp.length} steps)
+                                  </button>
+                                </div>
                               </div>
                             );
                           })()}
@@ -3602,11 +4135,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     console.log("Collaborator view - relevant changes:", relevantChanges.length, "changes:", relevantChanges.map(c => ({ id: c.id, tp: c.talking_point, status: c.status })));
                   }
 
-                  // Sort by created_at descending (newest first)
+                  // Sort by created_at ascending (oldest first)
                   relevantChanges = relevantChanges.sort((a, b) => {
                     const dateA = new Date(a.created_at).getTime();
                     const dateB = new Date(b.created_at).getTime();
-                    return dateB - dateA; // Descending order (newest first)
+                    return dateA - dateB; // Ascending order (oldest first)
                   });
 
                   if (relevantChanges.length === 0) {
@@ -3638,12 +4171,30 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                       >
                         <div className="flex items-start justify-between mb-2">
                           <div className="flex-1">
+                            <div className="flex items-center justify-between">
+
+                            
                             <div className="text-white text-xs font-semibold mb-1">{change.user_name}</div>
+                            <div>{!isBookOwner && change.status === "pending" && change.user === currentUserId && (
+                          <button
+                            onClick={async () => {
+                              const result = await deleteContentChange(change.id);
+                              if (result.success) {
+                                if (selectedSection && bookId) {
+                                  await loadChanges();
+                                }
+                              }
+                            }}
+                            className=" px-1.5 py-0.25 bg-red-100 text-red-700 rounded hover:bg-red-200 text-sm w-full rounded-full"
+                          >
+                            X
+                          </button>
+                        )}</div></div>
                             <div className="text-gray-400 text-xs">
                               {new Date(change.created_at).toLocaleDateString()} {new Date(change.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </div>
                             <div className={`inline-block px-2 py-0.5 rounded text-xs mt-1 ${change.status === "pending" ? "bg-yellow-500/20 text-yellow-400" :
-                              change.status === "approved" ? "bg-green-500/20 text-green-400" :
+                              change.status === "approved" ? "bg-[#CDF056] text-[#0a1a2e]" :
                                 "bg-red-500/20 text-red-400"
                               }`}>
                               {change.status.toUpperCase()}
@@ -3662,82 +4213,13 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             const hasDeleted = preview.deleted.length > 0;
                             const hasInserted = preview.inserted.length > 0;
 
-                            if (!isBookOwner) {
-                              const preview = getChangePreviewText(change);
-                              const hasDeleted = preview.deleted.length > 0;
-                              const hasInserted = preview.inserted.length > 0;
-
-                              console.log(`[ChangesTab] Rendering change ${change.id}: hasDeleted=${hasDeleted}, hasInserted=${hasInserted}`);
-                              console.log(`[ChangesTab] preview.deleted="${preview.deleted.substring(0, 50)}..."`);
-                              console.log(`[ChangesTab] preview.inserted="${preview.inserted.substring(0, 50)}..."`);
-                              console.log(`[ChangesTab] Raw step_json:`, (change as any).step_json);
-
-                              if (!hasDeleted && !hasInserted) {
-                                return (
-                                  <div>
-                                    <div className="text-xs text-gray-400 mb-2 font-medium">SUGGESTED CHANGE:</div>
-                                    <div className="bg-gray-500/10 border border-gray-500/30 rounded p-3">
-                                      <p className="text-xs text-gray-400">
-                                        Preview unavailable
-                                      </p>
-                                    </div>
-                                  </div>
-                                );
-                              }
-
-                              return (
-                                <div>
-                                  <div className="text-xs text-gray-400 mb-2 font-medium">SUGGESTED CHANGE:</div>
-                                  <div className="space-y-2">
-                                    {hasDeleted && (
-                                      <div className="bg-red-500/10 border border-red-500/30 rounded p-3">
-                                        <div className="text-xs text-red-400 mb-1 font-semibold">Deleted</div>
-                                        <p
-                                          className="text-sm text-red-300 whitespace-pre-wrap line-through pending-step-deletion"
-                                          style={{ wordBreak: "break-word" }}
-                                        >
-                                          {preview.deleted}
-                                        </p>
-                                      </div>
-                                    )}
-                                    {hasInserted && (
-                                      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded p-3">
-                                        <div className="text-xs text-yellow-400 mb-1 font-semibold">Inserted</div>
-                                        <p
-                                          className="text-sm text-yellow-200 whitespace-pre-wrap pending-step-highlight"
-                                          style={{ wordBreak: "break-word" }}
-                                        >
-                                          {preview.inserted}
-                                        </p>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            }
-
-                            const previewHtml = getChangePreviewHtml(change);
-                            if (previewHtml) {
-                              return (
-                                <div>
-                                  <div className="text-xs text-gray-400 mb-2 font-medium">SUGGESTED CHANGE:</div>
-                                  <div
-                                    className="text-sm text-gray-200 whitespace-pre-wrap"
-                                    style={{ wordBreak: "break-word" }}
-                                    dangerouslySetInnerHTML={{ __html: previewHtml }}
-                                  />
-                                </div>
-                              );
-                            }
-
                             if (!hasDeleted && !hasInserted) {
-                              const steps = Array.isArray(stepJson) ? stepJson : [stepJson];
                               return (
                                 <div>
                                   <div className="text-xs text-gray-400 mb-2 font-medium">SUGGESTED CHANGE:</div>
                                   <div className="bg-gray-500/10 border border-gray-500/30 rounded p-3">
                                     <p className="text-xs text-gray-400">
-                                      {steps.length > 1 ? "Preview unavailable" : "Preview unavailable"}
+                                      Preview unavailable
                                     </p>
                                   </div>
                                 </div>
@@ -3752,7 +4234,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                     <div className="bg-red-500/10 border border-red-500/30 rounded p-3">
                                       <div className="text-xs text-red-400 mb-1 font-semibold">Deleted</div>
                                       <p
-                                        className="text-sm text-red-300 whitespace-pre-wrap line-through"
+                                        className="text-sm text-red-300 whitespace-pre-wrap line-through pending-step-deletion"
                                         style={{ wordBreak: "break-word" }}
                                       >
                                         {preview.deleted}
@@ -3760,10 +4242,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                     </div>
                                   )}
                                   {hasInserted && (
-                                    <div className="bg-green-500/10 border border-green-500/30 rounded p-3">
-                                      <div className="text-xs text-green-400 mb-1 font-semibold">Inserted</div>
+                                    <div className="bg-yellow-500/10 border border-yellow-500/30 rounded p-3">
+                                      <div className="text-xs text-yellow-400 mb-1 font-semibold">Inserted</div>
                                       <p
-                                        className="text-sm text-green-300 whitespace-pre-wrap"
+                                        className="text-sm text-yellow-200 whitespace-pre-wrap pending-step-highlight"
                                         style={{ wordBreak: "break-word" }}
                                       >
                                         {preview.inserted}
@@ -3774,6 +4256,83 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               </div>
                             );
                           })()}
+                        </div>
+
+                        {/* Comment section - add/edit for change author only; display for all with normal comment styling */}
+                        <div className="mt-3 pt-3 border-t border-[#2d3a4a]">
+                          {editingChangeCommentId === change.id ? (
+                            <div className="space-y-2">
+                              <textarea
+                                value={editingChangeCommentText}
+                                onChange={(e) => setEditingChangeCommentText(e.target.value)}
+                                placeholder="Add a comment explaining this change..."
+                                className="w-full px-3 py-2 text-sm border border-[#2d3a4a] rounded bg-[#0a1a2e] text-gray-200 placeholder-gray-500 resize-none"
+                                rows={2}
+                                autoFocus
+                              />
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={async () => {
+                                    const result = await updateContentChangeComment(change.id, editingChangeCommentText.trim());
+                                    if (result.success) {
+                                      setContentChanges((prev) =>
+                                        prev.map((c) =>
+                                          c.id === change.id ? { ...c, comment: editingChangeCommentText.trim() } : c
+                                        )
+                                      );
+                                      setEditingChangeCommentId(null);
+                                      setEditingChangeCommentText("");
+                                    }
+                                  }}
+                                  className="px-2 py-1 text-xs bg-[#CDF056] text-[#0a1a2e] rounded hover:bg-[#CDF056]/80"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setEditingChangeCommentId(null);
+                                    setEditingChangeCommentText("");
+                                  }}
+                                  className="px-2 py-1 text-xs text-gray-400 hover:text-gray-200"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (change.comment && change.comment.trim()) ? (
+                            <div className="bg-white rounded-lg p-3 text-sm border border-gray-200">
+                              <p className="text-gray-700 whitespace-pre-wrap">{change.comment}</p>
+                              {change.status === "pending" && !isBookOwner && change.user === currentUserId && (
+                                <button
+                                  onClick={() => {
+                                    setEditingChangeCommentId(change.id);
+                                    setEditingChangeCommentText(change.comment || "");
+                                  }}
+                                  className="mt-2 text-xs text-[#CDF056] hover:underline"
+                                >
+                                  Edit
+                                </button>
+                              )}
+                            </div>
+                          ) : change.status === "pending" && !isBookOwner && change.user === currentUserId ? (
+                            <button
+                              onClick={() => {
+                                setEditingChangeCommentId(change.id);
+                                setEditingChangeCommentText("");
+                              }}
+                              className="text-xs text-[#CDF056] hover:underline"
+                            >
+                              + Add comment
+                            </button>
+                          ) : (
+                            (change.comment && change.comment.trim()) ? (
+                              <div className="bg-white rounded-lg p-3 text-sm border border-gray-200">
+                                <p className="text-gray-700 whitespace-pre-wrap">{change.comment}</p>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-gray-500 italic">No comment</p>
+                            )
+                          )}
                         </div>
 
                         {isBookOwner && change.status === "pending" && (
@@ -3812,22 +4371,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           </div>
                         )}
 
-                        {!isBookOwner && change.status === "pending" && change.user === (window as any).currentUserId && (
-                          <button
-                            onClick={async () => {
-                              const result = await deleteContentChange(change.id);
-                              if (result.success) {
-                                // Reload changes for the current section
-                                if (selectedSection && bookId) {
-                                  await loadChanges();
-                                }
-                              }
-                            }}
-                            className="mt-3 px-3 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm w-full"
-                          >
-                            Delete
-                          </button>
-                        )}
+                        
                       </div>
                     );
                   });
@@ -3918,11 +4462,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                   
 {browserSupportsSpeechRecognition && (
   <SpeechToText
- onTranscript={handleTranscript}
- onListeningChange={setIsListening}
-
-  
-/>
+    onTranscript={handleTranscript}
+    onListeningChange={setIsListening}
+    onError={(msg) => notification.error(msg)}
+  />
 )}
                   <button
                     onClick={() => handleSendChatMessage(false)}
@@ -3987,22 +4530,18 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             if (!selectedItem || !bookId) return;
                             setIsReviewing(true);
                             setReviewResult(null);
-                            setChapterComments([]);
+                            setDismissedAiSuggestions(new Set());
                             try {
                               const result = await reviewChapter(selectedItem.chapterId);
                               if (result.success && result.data) {
                                 setReviewResult(result.data);
-                                // Load chapter comments to display in this tab
-                                const chapterCommentsResult = await getChapterComments(selectedItem.chapterId);
-                                if (chapterCommentsResult.success && chapterCommentsResult.data) {
-                                  setChapterComments(chapterCommentsResult.data);
-                                }
+                                setDismissedAiSuggestions(new Set());
                               } else {
-                                alert(result.error || "Failed to review chapter");
+                                notification.error(result.error || "Failed to review chapter");
                               }
                             } catch (error) {
                               console.error("Error reviewing chapter:", error);
-                              alert("Error reviewing chapter. Please try again.");
+                              notification.error("Error reviewing chapter. Please try again.");
                             } finally {
                               setIsReviewing(false);
                             }
@@ -4045,7 +4584,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           <button
                             onClick={() => {
                               setReviewResult(null);
-                              setChapterComments([]);
+                              setDismissedAiSuggestions(new Set());
                             }}
                             className="text-xs text-gray-400 hover:text-white"
                           >
@@ -4056,33 +4595,29 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           <div className="text-gray-300">
                             <span className="font-semibold">{reviewResult.review_items_found}</span> issues found
                           </div>
-                          <div className="text-gray-300">
-                            <span className="font-semibold">{reviewResult.comments_created}</span> comments created
-                          </div>
+                          {displayedAiSuggestions.length < reviewResult.review_items_found && (
+                            <div className="text-gray-400 text-xs">
+                              {displayedAiSuggestions.length} shown (some dismissed)
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
 
-                    {/* Display AI Review Comments */}
-                    {chapterComments.filter(c => c.comment_type === "ai").length > 0 && (
+                    {/* Display AI Review Suggestions */}
+                    {displayedAiSuggestions.length > 0 && (
                       <div className="space-y-3">
                         <h4 className="text-sm font-semibold text-white mb-2">Review Suggestions</h4>
-                        {chapterComments
-                          .filter(c => c.comment_type === "ai")
-                          .map((comment) => {
-                            // Parse the comment text (format: Category\n\nAnchor\n\nComment: ...\n\nOptions: ...\n\nGlossary: ...)
-                            const parts = comment.text.split("\n\n");
-                            const category = parts[0] || "Review";
-                            const anchor = parts[1] || "";
-                            const commentDetails = parts.slice(2).join("\n\n");
-
+                          {displayedAiSuggestions.map((suggestion) => {
+                            const key = suggestionKey(suggestion);
                             return (
-                              <div key={comment.id} className="bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg p-3">
+                              <div key={key} data-suggestion-key={key} className="bg-[#1a2a3a] border border-[#2d3a4a] rounded-lg p-3">
                                 <div className="flex items-start justify-between mb-1">
 
-                                  <div className="text-xs text-gray-500 ">
-                                    {comment.section_title}
-                                  </div>
+                                  
+                                  <span className="px-2 py-0.5 bg-[#CDF056]/20 text-[#CDF056] text-xs font-semibold rounded ">
+                                  {suggestion.category}
+                                </span>
                                   <button
                                     onClick={() => {
                                       // Find the section containing this talking point
@@ -4094,7 +4629,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                         for (const chapter of outline.chapters) {
                                           for (const section of chapter.sections || []) {
                                             for (const tp of section.talking_points || []) {
-                                              if (tp.id === comment.talking_point_id) {
+                                              if (tp.id === suggestion.talking_point_id) {
                                                 targetChapterId = chapter.id!;
                                                 targetSectionId = section.id!;
                                                 targetSectionTitle = section.title;
@@ -4115,11 +4650,13 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                       }
 
                                       // Navigate to the talking point
-                                      setCurrentTalkingPointId(comment.talking_point_id);
+                                      setCurrentTalkingPointId(suggestion.talking_point_id);
+                                      // Ensure AI preview is shown
+                                      setHighlightPreviewMode("ai");
 
                                       // Scroll to the talking point element after section loads
                                       setTimeout(() => {
-                                        const tpElement = document.querySelector(`[data-tp-id="${comment.talking_point_id}"]`);
+                                        const tpElement = document.querySelector(`[data-tp-id="${suggestion.talking_point_id}"]`);
                                         if (tpElement) {
                                           tpElement.scrollIntoView({ behavior: "smooth", block: "center" });
                                           // Highlight the talking point briefly
@@ -4131,6 +4668,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                             }, 2000);
                                           }
                                         }
+                                        // Retrigger decorations so AI preview reappears if it disappeared
+                                        setDecorationRefreshTrigger((t) => t + 1);
                                       }, 300); // Longer delay to allow section to render
                                     }}
                                     className="text-xs text-[#CDF056] hover:text-[#CDF056]/80 flex items-center gap-1 hover:underline"
@@ -4142,35 +4681,72 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                     Go to
                                   </button>
                                 </div>
-                                <span className="px-2 py-0.5 bg-[#CDF056]/20 text-[#CDF056] text-xs font-semibold rounded ">
-                                  {category}
-                                </span>
+                                <div className="text-xs text-gray-500 mb-2">
+                                    {suggestion.section_title}
+                                  </div>
+                               
 
-                                <div className="text-xs text-gray-400 mb-2">
-                                  {comment.talking_point_text}
-                                </div>
-                                {anchor && (
+                                
+                                {suggestion.anchor && (
                                   <div className="bg-[#0a1a2e] rounded p-2 mb-2">
                                     <p className="text-xs text-gray-400 mb-1 font-semibold">Original:</p>
-                                    <p className="text-sm text-gray-300 italic">"{anchor}"</p>
+                                    <p className="text-sm text-gray-300 italic whitespace-pre-wrap">"{htmlToDisplayText(suggestion.anchor)}"</p>
                                   </div>
                                 )}
-                                {comment.suggested_replacement && (
-                                  <div className="bg-[#0d2a1a] rounded p-2 mb-2">
-                                    <p className="text-xs text-[#CDF056] mb-1 font-semibold">Suggested:</p>
-                                    <p className="text-sm text-green-300">"{comment.suggested_replacement}"</p>
+                                {suggestion.suggested_change && (
+                                  <div className="bg-gray-50 rounded p-2 mb-2">
+                                    <p className="text-xs text-gray-400 mb-1 font-semibold">Replace with:</p>
+                                    <p className="text-sm text-primary-500 whitespace-pre-wrap">"{htmlToDisplayText(suggestion.suggested_change)}"</p>
                                   </div>
                                 )}
-                                {commentDetails && (
-                                  <p className="text-xs text-gray-400 mt-2 whitespace-pre-wrap">{commentDetails}</p>
-                                )}
+                                {/* AI Coach comment bubble - styled like a speech bubble with Dismiss/Accept inside */}
+                                <div className="relative mt-3">
+                                  <div className="bg-white rounded-2xl shadow-md border border-gray-100 p-3">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <div className="w-7 h-7 rounded-full bg-[#CDF056]/30 flex items-center justify-center shrink-0">
+                                        <svg className="w-4 h-4 text-[#2d4a3e]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                                        </svg>
+                                      </div>
+                                      <span className="text-gray-900 font-semibold text-sm">AI Coach Review</span>
+                                    </div>
+                                    {suggestion.comment?.trim() && (
+                                      <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap mb-3">{suggestion.comment.trim()}</p>
+                                    )}
+                                    <div className="flex items-center justify-end gap-2">
+                                      <button
+                                        onClick={() => setDismissedAiSuggestions(prev => new Set([...prev, key]))}
+                                        className="text-xs px-2 py-1 text-gray-500 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                                        title="Dismiss"
+                                      >
+                                        Dismiss
+                                      </button>
+                                      <button
+                                        onClick={() => handleAcceptAiSuggestion(suggestion)}
+                                        disabled={suggestion.suggested_change == null}
+                                        className="text-xs px-2 py-1 bg-[#CDF056] text-[#011b2d] rounded-md hover:bg-[#CDF056]/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                        title={
+                                          contentChanges.some(
+                                            (c) =>
+                                              c.talking_point === suggestion.talking_point_id &&
+                                              (!c.status || c.status === "pending")
+                                          )
+                                            ? "Accept or reject collaborator suggestions first (click to open Changes tab)"
+                                            : "Accept suggestion"
+                                        }
+                                      >
+                                        Accept
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
                               </div>
                             );
                           })}
                       </div>
                     )}
 
-                    {reviewResult && chapterComments.filter(c => c.comment_type === "ai").length === 0 && (
+                    {reviewResult && displayedAiSuggestions.length === 0 && (
                       <div className="text-center text-gray-400 text-sm py-4">
                         No review suggestions found for this chapter.
                       </div>
@@ -4233,7 +4809,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           setGlossaryTerms([...glossaryTerms, result.data]);
                           setNewTermInput("");
                         } else {
-                          alert(result.error || "Failed to add term");
+                          notification.error(result.error || "Failed to add term");
                         }
                       }
                     }}
@@ -4250,7 +4826,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           setGlossaryTerms([...glossaryTerms, result.data]);
                           setNewTermInput("");
                         } else {
-                          alert(result.error || "Failed to add term");
+                          notification.error(result.error || "Failed to add term");
                         }
                       }
                     }}
@@ -4308,7 +4884,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                 if (result.success) {
                                   setGlossaryTerms(glossaryTerms.filter((t) => t.id !== term.id));
                                 } else {
-                                  alert(result.error || "Failed to delete term");
+                                  notification.error(result.error || "Failed to delete term");
                                 }
                               }
                             }}
@@ -4342,6 +4918,17 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                   </svg>
                 </button>
               </div>
+
+              {/* Loading indicator */}
+              {isApplyingQuickAction && (
+                <div className="shrink-0 px-4 py-3 bg-[#CDF056]/10 border-b border-[#CDF056]/30 flex items-center gap-3">
+                  <svg className="animate-spin h-5 w-5 text-[#2d4a3e]" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <span className="text-sm font-medium text-gray-700">Applying action...</span>
+                </div>
+              )}
 
               {/* Actions Content */}
               <div className="flex-1 overflow-y-auto p-4">
@@ -4704,6 +5291,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           <button
             onClick={() => {
               if (!isBookOwner && collaboratorRole !== "editor") return;
+              setHighlightPreviewMode("collaborators");
               setActiveRightView("changes");
             }}
             disabled={!isBookOwner && collaboratorRole !== "editor"}
@@ -4732,6 +5320,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           <button
             onClick={() => {
               if (!isBookOwner && collaboratorRole !== "editor") return;
+              setHighlightPreviewMode("ai");
               setActiveRightView("review");
             }}
             disabled={!isBookOwner && collaboratorRole !== "editor"}
@@ -4739,11 +5328,18 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               ? "text-gray-600 opacity-50 cursor-not-allowed"
               : activeRightView === "review" ? "bg-[#2d4a3e] text-[#CDF056]" : "text-gray-400 hover:text-white"
               }`}
-            title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can review chapters" : "AI Coach Review"}
+            title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can review chapters" : isReviewing ? "Reviewing chapter..." : "AI Coach Review"}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
+            {isReviewing ? (
+              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+            ) : (
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            )}
           </button>
           <button
             onClick={() => {
@@ -4796,6 +5392,203 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           </button>
         </div>
       </div>
+
+      {/* Highlight Comment Popover - shows comment when clicking a highlight */}
+      {highlightCommentPopover && (
+        <>
+          <div
+            className="fixed inset-0 z-[100]"
+            onClick={() => setHighlightCommentPopover(null)}
+          />
+          <div
+            className="fixed z-[101] w-80 max-w-[calc(100vw-24px)] max-h-[calc(100vh-24px)] overflow-y-auto bg-white rounded-xl shadow-xl border border-gray-200 p-4"
+            style={{
+              left: Math.max(12, Math.min(highlightCommentPopover.x, window.innerWidth - 336)),
+              top: (() => {
+                const padding = 12;
+                const minFromBottom = 400;
+                const preferredTop = highlightCommentPopover.y + 12;
+                const maxTop = window.innerHeight - minFromBottom - padding;
+                return Math.max(padding, Math.min(preferredTop, maxTop));
+              })(),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-2 mb-2">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-full bg-[#CDF056]/30 flex items-center justify-center shrink-0">
+                  <svg className="w-4 h-4 text-[#2d4a3e]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                  </svg>
+                </div>
+                <span className="text-gray-900 font-semibold text-sm">
+                  {highlightCommentPopover.type === "ai" ? "AI Coach Review" : (highlightCommentPopover.change.user_name || "Collaborator")}
+                </span>
+              </div>
+              <button
+                onClick={() => setHighlightCommentPopover(null)}
+                className="text-gray-400 hover:text-gray-600 p-0.5"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            {highlightCommentPopover.type === "ai" ? (
+              <>
+                {highlightCommentPopover.suggestion.category && (
+                  <span className="inline-block px-2 py-0.5 bg-[#CDF056]/20 text-[#CDF056] text-xs font-semibold rounded mb-2">
+                    {highlightCommentPopover.suggestion.category}
+                  </span>
+                )}
+                {highlightCommentPopover.suggestion.comment ? (
+                  <p className="text-gray-800 text-xs leading-relaxed whitespace-pre-wrap">
+                    {highlightCommentPopover.suggestion.comment}
+                  </p>
+                ) : (
+                  <p className="text-gray-500 text-sm italic">No additional comment</p>
+                )}
+                {highlightCommentPopover.suggestion.suggested_change && (
+                  <div className="my-2 p-2 bg-gray-50 rounded text-sm">
+                    <span className="text-gray-500 font-medium">Replace with: </span>
+                    <span className="text-[#2d4a3e] whitespace-pre-wrap">"{htmlToDisplayText(highlightCommentPopover.suggestion.suggested_change)}"</span>
+                  </div>
+                )}
+                <div className="mt-3 flex flex-wrap gap-2 items-center">
+                  <button
+                    onClick={() => {
+                      setHighlightedReviewSuggestionKey(suggestionKey(highlightCommentPopover.suggestion));
+                      setHighlightPreviewMode("ai");
+                      setActiveRightView("review");
+                      setHighlightCommentPopover(null);
+                    }}
+                    className="text-xs text-[#CDF056] hover:underline"
+                  >
+                    View in AI Coach Review →
+                  </button>
+                  {isBookOwner && (
+                    <div className="flex gap-2 ml-auto">
+                      <button
+                        onClick={() => {
+                          setDismissedAiSuggestions((prev) => new Set([...prev, suggestionKey(highlightCommentPopover.suggestion)]));
+                          setHighlightCommentPopover(null);
+                        }}
+                        className="text-xs px-2 py-1 text-gray-500 border border-gray-300 rounded-md hover:bg-gray-50"
+                      >
+                        Dismiss
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const suggestion = highlightCommentPopover.suggestion;
+                          setHighlightCommentPopover(null);
+                          await handleAcceptAiSuggestion(suggestion);
+                        }}
+                        disabled={
+                          highlightCommentPopover.suggestion.suggested_change == null ||
+                          contentChanges.some(
+                            (c) =>
+                              c.talking_point === highlightCommentPopover.suggestion.talking_point_id &&
+                              (!c.status || c.status === "pending")
+                          )
+                        }
+                        className="text-xs px-2 py-1 bg-[#CDF056] text-[#011b2d] rounded-md hover:bg-[#CDF056]/80 disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={
+                          contentChanges.some(
+                            (c) =>
+                              c.talking_point === highlightCommentPopover.suggestion.talking_point_id &&
+                              (!c.status || c.status === "pending")
+                          )
+                            ? "Accept or reject collaborator suggestions first"
+                            : "Apply this suggestion"
+                        }
+                      >
+                        Accept
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                {highlightCommentPopover.change.comment ? (
+                  <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">
+                    {highlightCommentPopover.change.comment}
+                  </p>
+                ) : (
+                  <p className="text-gray-500 text-sm italic">No comment provided</p>
+                )}
+                <div className="mt-3 flex flex-wrap gap-2 items-center">
+                  <button
+                    onClick={() => {
+                      setHighlightPreviewMode("collaborators");
+                      setActiveRightView("changes");
+                      setFocusedChangeTpId(highlightCommentPopover.change.talking_point);
+                      setHighlightCommentPopover(null);
+                    }}
+                    className="text-xs text-[#CDF056] hover:underline"
+                  >
+                    View in Changes →
+                  </button>
+                  {!isBookOwner && highlightCommentPopover.change.user === currentUserId && highlightCommentPopover.change.status === "pending" && (
+                    <button
+                      onClick={async () => {
+                        const result = await deleteContentChange(highlightCommentPopover.change.id);
+                        if (result.success) {
+                          await loadChanges();
+                          setHighlightCommentPopover(null);
+                        }
+                      }}
+                      className="text-xs px-2 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+                {isBookOwner && highlightCommentPopover.change.status === "pending" && (() => {
+                  const oldestId = getOldestPendingChangeId(highlightCommentPopover.change.talking_point);
+                  const isOldestPending = highlightCommentPopover.change.id === oldestId;
+                  return (
+                    <div className="mt-3 pt-3 border-t border-gray-200">
+                      {!isOldestPending && (
+                        <p className="text-xs text-gray-500 mb-2">Approve earlier change(s) for this talking point first.</p>
+                      )}
+                      <div className="flex gap-2">
+                        <button
+                          onClick={async () => {
+                            const changeToApprove = highlightCommentPopover.change;
+                            setHighlightCommentPopover(null);
+                            await handleApproveChange(changeToApprove);
+                          }}
+                          disabled={!isOldestPending}
+                          className={`flex-1 px-3 py-1.5 rounded text-sm ${!isOldestPending
+                            ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                            : "bg-green-600 text-white hover:bg-green-700"
+                            }`}
+                          title={!isOldestPending ? "Approve earlier changes first" : "Accept this change"}
+                        >
+                          Accept
+                        </button>
+                        <button
+                          onClick={async () => {
+                            const result = await rejectContentChange(highlightCommentPopover.change.id);
+                            if (result.success) {
+                              await loadChanges();
+                              setHighlightCommentPopover(null);
+                            }
+                          }}
+                          className="flex-1 px-3 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 text-sm"
+                        >
+                          Decline
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+        </>
+      )}
 
       {/* Collaborator Management Modal */}
       {showCollaboratorModal && (

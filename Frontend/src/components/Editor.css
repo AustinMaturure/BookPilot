@@ -37,14 +37,39 @@
   margin: 1em 0 0.5em 0;
 }
 
-.ProseMirror ul,
+.ProseMirror ul {
+  padding-left: 1.5em;
+  margin: 0.75em 0;
+  list-style-type: disc;
+}
+
 .ProseMirror ol {
   padding-left: 1.5em;
   margin: 0.75em 0;
+  list-style-type: decimal;
 }
 
 .ProseMirror li {
   margin: 0.25em 0;
+}
+
+.ProseMirror blockquote {
+  border-left: 4px solid #d1d5db;
+  padding-left: 1em;
+  margin: 0.75em 0;
+  color: #4b5563;
+}
+
+.ProseMirror blockquote p {
+  margin: 0.25em 0;
+}
+
+.ProseMirror blockquote p:first-child {
+  margin-top: 0;
+}
+
+.ProseMirror blockquote p:last-child {
+  margin-bottom: 0;
 }
 
 .ProseMirror a {
@@ -86,6 +111,7 @@
   color: #dc2626 !important;
   padding: 2px 4px !important;
   border-radius: 2px !important;
+  display: inline !important;
 }
 
 .pending-step-insertion {
@@ -96,6 +122,8 @@
   border-radius: 2px !important;
   margin-left: 2px !important;
   display: inline !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
 }
 
 .pending-step-insertion * {
@@ -107,6 +135,7 @@
   background-color: #fef08a !important;
   color: #92400e !important;
   border-radius: 2px !important;
+  display: inline !important;
 }
 
 /* Styles for pending changes in the editor */
@@ -157,13 +186,17 @@
   text-decoration: line-through !important;
   background-color: rgba(255, 200, 0, 0.3) !important;
   color: #92400e !important;
+  cursor: pointer !important;
+  display: inline !important;
 }
 
 .collaborator-pending-insertion {
   background-color: rgba(255, 230, 0, 0.3) !important;
   color: #92400e !important;
   display: inline !important;
-  white-space: pre !important;
+  cursor: pointer !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
   letter-spacing: normal !important;
   word-spacing: normal !important;
   padding: 1px 2px !important;
@@ -171,18 +204,44 @@
   margin: 0 1px !important;
 }
 
+/* AI Coach Review highlights - amber for suggested text, green for replacement */
+.ProseMirror .ai-coach-suggestion {
+  background-color: rgba(253, 186, 116, 0.4) !important;
+  border-bottom: 2px dashed #f59e0b !important;
+  color: #92400e !important;
+  padding: 1px 2px !important;
+  border-radius: 2px !important;
+  cursor: pointer !important;
+  display: inline !important;
+}
+
+.ProseMirror .ai-coach-suggested-insertion {
+  background-color: rgba(167, 243, 208, 0.6) !important;
+  color: #065f46 !important;
+  display: inline !important;
+  cursor: pointer !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  padding: 1px 4px !important;
+  border-radius: 2px !important;
+  margin: 0 2px !important;
+  border-left: 2px solid #10b981 !important;
+}
+
 /* Owner preview highlights - red/green theme */
 .owner-pending-deletion {
   text-decoration: line-through !important;
   background-color: rgba(255, 0, 0, 0.2) !important;
   color: #666 !important;
+  display: inline !important;
 }
 
 .owner-pending-insertion {
   background-color: rgba(0, 255, 0, 0.2) !important;
   border-left: 2px solid #00cc00 !important;
   display: inline !important;
-  white-space: pre !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
   letter-spacing: normal !important;
   word-spacing: normal !important;
 }

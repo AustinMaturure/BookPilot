@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
+import { NotificationProvider } from './contexts/NotificationContext';
 import Navbar from './components/navbar.tsx';
 import Books from './pages/Books.tsx';
 import BookDetail from './pages/BookDetail.tsx';
@@ -47,13 +48,14 @@ function App() {
 
   return (
     <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID} >
-      <BrowserRouter>
-        {!isAuthenticated ? (
-          <Login />
-        ) : (
-          <>
-            <Navbar/>
-            <Routes>
+      <NotificationProvider>
+        <BrowserRouter>
+          {!isAuthenticated ? (
+            <Login />
+          ) : (
+            <>
+              <Navbar/>
+              <Routes>
               <Route path="/" element={<Books />} />
               <Route path="/book/:id" element={<BookDetail />} />
               <Route path="/marketing" element={<Marketing />} />
@@ -61,10 +63,11 @@ function App() {
               <Route path="/analytics" element={<Analytics />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </>
-        )}
-      </BrowserRouter>
+              </Routes>
+            </>
+          )}
+        </BrowserRouter>
+      </NotificationProvider>
     </GoogleOAuthProvider>
   )
 }

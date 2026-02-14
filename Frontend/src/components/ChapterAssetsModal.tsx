@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNotification } from "../contexts/NotificationContext";
 import { uploadChapterAsset, listChapterAssets, deleteChapterAsset } from "../utils/api";
 
 type ChapterAsset = {
@@ -25,6 +26,7 @@ export default function ChapterAssetsModal({
   chapterId,
   onGenerate,
 }: ChapterAssetsModalProps) {
+  const notification = useNotification();
   const [assets, setAssets] = useState<ChapterAsset[]>([]);
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -67,7 +69,7 @@ export default function ChapterAssetsModal({
     const fileExt = file.name.split(".").pop()?.toLowerCase();
 
     if (!fileExt || !allowedTypes.includes(fileExt)) {
-      alert(`File type .${fileExt} not allowed. Allowed types: ${allowedTypes.join(", ")}`);
+      notification.error(`File type .${fileExt} not allowed. Allowed types: ${allowedTypes.join(", ")}`);
       return;
     }
 
@@ -81,11 +83,11 @@ export default function ChapterAssetsModal({
       if (result.success) {
         await loadAssets();
       } else {
-        alert(result.error || "Failed to upload file");
+        notification.error(result.error || "Failed to upload file");
       }
     } catch (error) {
       console.error("Error uploading file:", error);
-      alert("Failed to upload file");
+      notification.error("Failed to upload file");
     } finally {
       setUploading(false);
       if (fileInputRef.current) {
@@ -100,7 +102,7 @@ export default function ChapterAssetsModal({
 
   const handleRecordClick = () => {
     // Placeholder for recording functionality
-    alert("Recording functionality coming soon");
+    notification.info("Recording functionality coming soon");
   };
 
   const toggleAssetSelection = (assetId: number) => {
@@ -139,11 +141,11 @@ export default function ChapterAssetsModal({
           return newSet;
         });
       } else {
-        alert(result.error || "Failed to delete asset");
+        notification.error(result.error || "Failed to delete asset");
       }
     } catch (error) {
       console.error("Error deleting asset:", error);
-      alert("Failed to delete asset");
+      notification.error("Failed to delete asset");
     } finally {
       setDeletingAssetId(null);
     }
