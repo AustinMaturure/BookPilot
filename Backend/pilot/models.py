@@ -5,6 +5,12 @@ import json
 # Create your models here.
 
 class Book(models.Model):
+    SPELLING_CONVENTION_CHOICES = [
+        ("us", "American English (US)"),
+        ("uk", "British English (UK)"),
+        ("auto", "Auto-detect from content"),
+    ]
+    
     title = models.CharField(max_length=255)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="books", null=True, blank=True)
     core_topic = models.TextField(blank=True, null=True, help_text="The core topic of the book")
@@ -14,9 +20,62 @@ class Book(models.Model):
         null=True,
         help_text="Emotional audience type tag: {primary: 'RED'|'BLUE'|'GREEN'|'YELLOW', secondary?: 'RED'|'BLUE'|'GREEN'|'YELLOW', confidence: float, reasoning: string}"
     )
+    spelling_convention = models.CharField(
+        max_length=10,
+        choices=SPELLING_CONVENTION_CHOICES,
+        default="auto",
+        help_text="Preferred spelling convention for the book (US/UK English)"
+    )
     
     def __str__(self):
         return f"{self.title} "
+
+
+class GlossaryTerm(models.Model):
+    """
+    Glossary terms for a book - domain/brand/framework terms that should not be flagged as spelling errors.
+    Also stores preferred spellings and definitions for consistency.
+    """
+    book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name="glossary_terms")
+    term = models.CharField(max_length=255, help_text="The term as it appears in the text")
+    preferred_spelling = models.CharField(
+        max_length=255, 
+        blank=True, 
+        null=True, 
+        help_text="Preferred spelling if different from term (e.g., for case sensitivity)"
+    )
+    definition = models.TextField(
+        blank=True, 
+        null=True, 
+        help_text="Optional definition or explanation of the term"
+    )
+    do_not_change = models.BooleanField(
+        default=True, 
+        help_text="If true, this term should never be flagged for spelling corrections"
+    )
+    category = models.CharField(
+        max_length=50,
+        choices=[
+            ("brand", "Brand/Company Name"),
+            ("framework", "Framework/Methodology"),
+            ("technical", "Technical Term"),
+            ("acronym", "Acronym/Abbreviation"),
+            ("proper_noun", "Proper Noun"),
+            ("other", "Other"),
+        ],
+        default="other",
+        help_text="Category of the term"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [["book", "term"]]
+        ordering = ["term"]
+
+    def __str__(self):
+        return f"{self.term} ({self.book.title})"
+
     
 class Chapter(models.Model):
     book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name="chapters")
@@ -70,6 +129,16 @@ def chapter_asset_upload_path(instance, filename):
     else:
         # Chapter-level asset (available to all talking points in the book)
         return f"book_{book_id}/chapter_assets/{filename}"
+
+
+def pillar_asset_upload_path(instance, filename):
+    """
+    Generate upload path for pillar assets.
+    Structure: book_{book_id}/pillar_assets/pillar_{pillar_id}/{filename}
+    """
+    book_id = instance.pillar.book.id
+    pillar_id = instance.pillar.id
+    return f"book_{book_id}/pillar_assets/pillar_{pillar_id}/{filename}"
 
 
 class ChapterAsset(models.Model):
@@ -219,12 +288,12 @@ class PositioningPillar(models.Model):
     
     THE 9 CANONICAL PILLARS:
     1. business_core - Business Core
-    2. avatar - The Avatar (target reader persona)
+    2. target_reader - Target Reader (target reader persona)
     3. emotional_resonance - Emotional Resonance (Red/Yellow/Blue/Green)
-    4. north_star - The North Star (core transformation promise)
+    4. book_goal - Book Goal (core transformation promise)
     5. pain_points - Pain Points (specific reader struggles)
-    6. the_shift - The Shift (false beliefs to overcome)
-    7. the_edge - The Edge (differentiation from competitors)
+    6. the_shift - Misconceptions (false beliefs to overcome)
+    7. the_edge - Differentiation (differentiation from competitors)
     8. the_foundation - The Foundation (content pillars)
     9. the_authority - The Authority (framework/strong opinion)
     """
@@ -236,12 +305,12 @@ class PositioningPillar(models.Model):
     
     PILLAR_SLUGS = [
         ("business_core", "Business Core"),
-        ("avatar", "The Avatar"),
+        ("target_reader", "Target Reader"),
         ("emotional_resonance", "Emotional Resonance"),
-        ("north_star", "The North Star"),
+        ("book_goal", "Book Goal"),
         ("pain_points", "Pain Points"),
-        ("the_shift", "The Shift"),
-        ("the_edge", "The Edge"),
+        ("the_shift", "Misconceptions"),
+        ("the_edge", "Differentiation"),
         ("the_foundation", "The Foundation"),
         ("the_authority", "The Authority"),
     ]
@@ -265,7 +334,30 @@ class PositioningPillar(models.Model):
     
     @classmethod
     def initialize_for_book(cls, book):
-        """Create all 9 pillars for a book. First pillar is ACTIVE, rest are LOCKED."""
+        """Create all 9 pillars for a book. All pillars are ACTIVE (no locking)."""
+        # Migrate old slugs to new slugs if they exist
+        slug_migrations = {
+            "avatar": "target_reader",
+            "north_star": "book_goal",
+        }
+        
+        # Create a dict from PILLAR_SLUGS for easy lookup
+        slug_to_name = dict(cls.PILLAR_SLUGS)
+        
+        for old_slug, new_slug in slug_migrations.items():
+            old_pillar = cls.objects.filter(book=book, slug=old_slug).first()
+            if old_pillar:
+                # Check if new slug already exists
+                new_pillar = cls.objects.filter(book=book, slug=new_slug).first()
+                if new_pillar:
+                    # New pillar exists, delete old one
+                    old_pillar.delete()
+                else:
+                    # Migrate old pillar to new slug
+                    old_pillar.slug = new_slug
+                    old_pillar.name = slug_to_name.get(new_slug, new_slug.replace("_", " ").title())
+                    old_pillar.save()
+        
         pillars = []
         for i, (slug, name) in enumerate(cls.PILLAR_SLUGS, start=1):
             pillar, created = cls.objects.get_or_create(
@@ -274,25 +366,23 @@ class PositioningPillar(models.Model):
                 defaults={
                     "name": name,
                     "order": i,
-                    "status": "ACTIVE" if i == 1 else "LOCKED",
+                    "status": "ACTIVE",  # All pillars are active - no locking
                 }
             )
+            # Update name, order, and status if pillar already existed
+            if not created:
+                pillar.name = name
+                pillar.order = i
+                # Unlock any previously locked pillars
+                if pillar.status == "LOCKED":
+                    pillar.status = "ACTIVE"
+                pillar.save()
             pillars.append(pillar)
         return pillars
     
     def unlock_next_pillar(self):
-        """When this pillar completes, unlock the next one."""
-        if self.status != "COMPLETE":
-            return None
-        next_pillar = PositioningPillar.objects.filter(
-            book=self.book,
-            order__gt=self.order,
-            status="LOCKED"
-        ).order_by("order").first()
-        if next_pillar:
-            next_pillar.status = "ACTIVE"
-            next_pillar.save()
-        return next_pillar
+        """No-op: All pillars are now accessible without unlocking."""
+        return None
 
 
 class PillarChatMessage(models.Model):
@@ -318,6 +408,20 @@ class PillarChatMessage(models.Model):
     
     def __str__(self):
         return f"{self.pillar.name} - {self.role}: {self.content[:50]}..."
+
+
+class PillarAsset(models.Model):
+    """Files uploaded for use in positioning pillar conversations"""
+    pillar = models.ForeignKey(PositioningPillar, on_delete=models.CASCADE, related_name="assets")
+    file = models.FileField(upload_to=pillar_asset_upload_path)
+    filename = models.CharField(max_length=255)
+    file_type = models.CharField(max_length=50)
+    extracted_text = models.TextField(blank=True, null=True, help_text="Extracted text content from the file")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="pillar_assets")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.file_type} asset for {self.pillar.name}"
 
 
 class PositioningBrief(models.Model):

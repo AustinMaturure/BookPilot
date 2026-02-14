@@ -30,7 +30,8 @@ load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-ocvh4zouq(zopae)9&sj_j$vqr#xtt+##w$e@w+$%5yl+$s!wq')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Set DEBUG=0 in Cloud Run / production for security
+DEBUG = os.getenv("DEBUG", "1") == "1"
 
 # ALLOWED_HOSTS should be space-separated domain names (no protocol, no trailing slash)
 # Example: ALLOWED_HOSTS="bookpilot.netlify.app localhost 127.0.0.1"
@@ -62,16 +63,15 @@ except ImportError:
     pass
 
 # CORS Configuration
-# Allow specific origins from environment variable, or default to localhost for development
-cors_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
-# Default allowed origins (add your production frontend URL here)
+# Allow specific origins from environment variable. Include production frontend in default.
 default_origins = ["http://localhost:5173", "https://bookpilot.netlify.app"]
-CORS_ALLOWED_ORIGINS = cors_origins_str.split() if cors_origins_str else default_origins
+cors_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", " ".join(default_origins))
+CORS_ALLOWED_ORIGINS = [o.strip() for o in cors_origins_str.split() if o.strip()] or default_origins
 
 # Allow credentials (cookies, authorization headers)
 CORS_ALLOW_CREDENTIALS = True
 
-# CORS headers that should be allowed
+# CORS headers that should be allowed (including preflight)
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
@@ -82,6 +82,16 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+]
+
+# Ensure preflight (OPTIONS) requests are handled
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
 ]
 
 # For development, you can use CORS_ALLOW_ALL_ORIGINS = True

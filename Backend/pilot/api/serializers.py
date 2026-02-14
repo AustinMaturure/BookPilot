@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from pilot.models import Book, Chapter, Section, TalkingPoint, Comment, ContentChange
+from pilot.models import Book, Chapter, Section, TalkingPoint, Comment, ContentChange, GlossaryTerm
 
 # TalkingPoint Serializer
 class TalkingPointSerializer(serializers.ModelSerializer):
@@ -84,10 +84,18 @@ class ContentChangeSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at", "approved_by", "approved_at"]
 
+# Glossary Term Serializer
+class GlossaryTermSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GlossaryTerm
+        fields = ["id", "book", "term", "preferred_spelling", "definition", "do_not_change", "category", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
 # Book Serializer with nested chapters
 class BookSerializer(serializers.ModelSerializer):
     chapters = ChapterSerializer(many=True, read_only=True)
 
     class Meta:
         model = Book
-        fields = ["id", "title", "chapters", "core_topic", "audience", "audience_tag"]
+        fields = ["id", "title", "chapters", "core_topic", "audience", "audience_tag", "spelling_convention"]

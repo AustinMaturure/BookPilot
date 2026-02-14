@@ -10,6 +10,8 @@ from .views import (
     list_books,
     create_book,
     get_book,
+    update_book,
+    delete_book,
     create_chapter,
     update_chapter,
     delete_chapter,
@@ -36,12 +38,21 @@ from .views import (
     collab_get_state,
     run_book_checks_endpoint,
     infer_and_update_audience_tag,
+    review_chapter,
+    get_chapter_comments,
     # Positioning Pillars
     pillars_list_initialize,
     pillar_chat,
     pillar_mark_complete,
     pillar_reset,
     get_positioning_brief,
+    upload_pillar_asset,
+    list_pillar_assets,
+    delete_pillar_asset,
+    # Glossary
+    glossary_list_create,
+    glossary_detail,
+    update_spelling_convention,
 )
 
 urlpatterns = [
@@ -55,6 +66,8 @@ urlpatterns = [
     path("books/", list_books),
     path("books/create/", create_book),
     path("books/<int:pk>/", get_book),
+    path("books/<int:pk>/update/", update_book),
+    path("books/<int:pk>/delete/", delete_book),
     path("books/<int:book_id>/chapters/", create_chapter),
     path("chapters/<int:chapter_id>/", update_chapter),
     path("chapters/<int:chapter_id>/delete/", delete_chapter),
@@ -81,6 +94,8 @@ urlpatterns = [
     path("talking_points/<int:talking_point_id>/collab/state/", collab_get_state),
     path("books/<int:book_id>/checks/", run_book_checks_endpoint),
     path("books/<int:book_id>/audience_tag/", infer_and_update_audience_tag),
+    path("chapters/<int:chapter_id>/review/", review_chapter),
+    path("chapters/<int:chapter_id>/comments/", get_chapter_comments),
     
     # Positioning Pillars API
     path("books/<int:book_id>/pillars/", pillars_list_initialize),  # GET: list, POST: initialize
@@ -88,4 +103,12 @@ urlpatterns = [
     path("pillars/<int:pillar_id>/complete/", pillar_mark_complete),  # POST: mark complete
     path("pillars/<int:pillar_id>/reset/", pillar_reset),  # POST: reset pillar
     path("books/<int:book_id>/brief/", get_positioning_brief),  # GET: positioning brief
+    path("pillars/<int:pillar_id>/assets/upload/", upload_pillar_asset),  # POST: upload asset
+    path("pillars/<int:pillar_id>/assets/", list_pillar_assets),  # GET: list assets
+    path("pillars/assets/<int:asset_id>/delete/", delete_pillar_asset),  # DELETE: delete asset
+    
+    # Glossary API
+    path("books/<int:book_id>/glossary/", glossary_list_create),  # GET: list, POST: create
+    path("glossary/<int:term_id>/", glossary_detail),  # GET, PUT, DELETE
+    path("books/<int:book_id>/spelling_convention/", update_spelling_convention),  # PUT: update spelling
 ]

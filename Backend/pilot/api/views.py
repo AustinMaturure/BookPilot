@@ -4,6 +4,7 @@ from typing import List
 
 from django.db import transaction
 from django.db.models import Prefetch
+from django.conf import settings
 from openai import OpenAI  # type: ignore[import-not-found]
 from pydantic import BaseModel  # type: ignore[import-not-found]
 from rest_framework import status
@@ -11,8 +12,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
-from pilot.api.serializers import BookSerializer, CommentSerializer, ContentChangeSerializer
-from pilot.models import Book, Chapter, Section, TalkingPoint, UserContext, ChapterAsset, Comment, BookCollaborator, ContentChange, CollaborationState, PositioningPillar, PillarChatMessage, PositioningBrief
+from pilot.api.serializers import BookSerializer, CommentSerializer, ContentChangeSerializer, GlossaryTermSerializer
+from pilot.models import Book, Chapter, Section, TalkingPoint, UserContext, ChapterAsset, Comment, BookCollaborator, ContentChange, CollaborationState, PositioningPillar, PillarChatMessage, PositioningBrief, PillarAsset, GlossaryTerm
 from pilot.api.checks import run_book_checks
 
 
@@ -51,19 +52,35 @@ def extract_text_from_file(asset):
         
         if file_ext == "txt":
             # Read plain text file
-            # Use file path directly since FieldFile.open() doesn't support encoding parameter
-            with open(asset.file.path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            # Use file.open() to work with both local and cloud storage
+            # Open in binary mode first, then decode to handle encoding properly
+            with asset.file.open('rb') as f:
+                content_bytes = f.read()
+                # Try to decode as UTF-8, fallback to latin-1 if needed
+                try:
+                    content = content_bytes.decode('utf-8')
+                except UnicodeDecodeError:
+                    # Fallback to latin-1 if UTF-8 fails
+                    content = content_bytes.decode('latin-1', errors='replace')
             return content
         
         elif file_ext == "csv":
             # Read CSV file
             import csv
-            # Use file path directly since FieldFile.open() doesn't support encoding parameter
-            with open(asset.file.path, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f)
+            import io
+            # Use file.open() to work with both local and cloud storage
+            with asset.file.open('rb') as f:
+                # Read bytes and decode
+                content_bytes = f.read()
+                try:
+                    content_str = content_bytes.decode('utf-8')
+                except UnicodeDecodeError:
+                    # Fallback to latin-1 if UTF-8 fails
+                    content_str = content_bytes.decode('latin-1', errors='replace')
+                # Use StringIO to read CSV from string
+                csv_reader = csv.reader(io.StringIO(content_str))
                 rows = []
-                for row in reader:
+                for row in csv_reader:
                     rows.append(", ".join(row))
             return "\n".join(rows)
         
@@ -213,12 +230,12 @@ def _build_prompt_from_brief(brief: 'PositioningBrief') -> str:
     # Add each pillar's summary
     pillar_order = [
         ("business_core", "BUSINESS CORE"),
-        ("avatar", "TARGET READER (AVATAR)"),
+        ("target_reader", "TARGET READER"),
         ("emotional_resonance", "EMOTIONAL DRIVERS"),
-        ("north_star", "NORTH STAR TRANSFORMATION"),
+        ("book_goal", "BOOK GOAL"),
         ("pain_points", "PAIN POINTS"),
-        ("the_shift", "BELIEF SHIFTS"),
-        ("the_edge", "DIFFERENTIATION (THE EDGE)"),
+        ("the_shift", "MISCONCEPTIONS"),
+        ("the_edge", "DIFFERENTIATION"),
         ("the_foundation", "CONTENT PILLARS (FOUNDATION)"),
         ("the_authority", "AUTHORITY & FRAMEWORK"),
     ]
@@ -236,13 +253,13 @@ def _build_prompt_from_brief(brief: 'PositioningBrief') -> str:
     lines.append("- Each chapter must have 3-6 sections")
     lines.append("- Each section must have 4-8 detailed talking points")
     lines.append("- The outline MUST align with the Content Pillars identified in THE FOUNDATION")
-    lines.append("- The reader journey must address all Pain Points and guide toward the North Star transformation")
+    lines.append("- The reader journey must address all Pain Points and guide toward the Book Goal transformation")
     lines.append("- Chapter titles should be compelling and action-oriented")
-    lines.append("- Incorporate The Shift (belief changes) throughout the structure")
+    lines.append("- Incorporate Misconceptions (belief changes) throughout the structure")
     lines.append("- The Authority framework should be woven into the chapter structure")
     lines.append("- Section titles should be specific and guide the reader through each concept")
     lines.append("- Talking points should be detailed enough to guide writing, not just bullet points")
-    lines.append("- The book title should reflect the core topic and unique approach from THE EDGE")
+    lines.append("- The book title should reflect the core topic and unique approach from DIFFERENTIATION")
     lines.append("\nReturn JSON only in the specified format.")
     
     return "\n".join(lines)
@@ -568,10 +585,48 @@ def createOutline(request):
                 # Build prompt from positioning brief instead of answers
                 base_prompt = _build_prompt_from_brief(brief)
             except PositioningBrief.DoesNotExist:
-                # Generate brief first
-                return Response({
-                    "detail": "Positioning brief not generated. Call the brief endpoint first.",
-                }, status=status.HTTP_400_BAD_REQUEST)
+                # Automatically generate the brief if it doesn't exist
+                pillar_summaries = {}
+                for p in pillars.order_by("order"):
+                    pillar_summaries[p.slug] = {
+                        "name": p.name,
+                        "summary": p.summary or "",
+                        "depth_score": p.depth_score,
+                    }
+                
+                # If audience_tag doesn't exist yet, try to infer it from emotional_resonance pillar
+                if not book.audience_tag:
+                    audience_tag = infer_audience_tag_from_pillars(book)
+                    if audience_tag:
+                        book.audience_tag = audience_tag
+                        book.save()
+                        print(f"Set audience_tag for book {book.id} during brief generation: {audience_tag}")
+                
+                # Build the full brief
+                brief_parts = [
+                    "# MASTER POSITIONING BRIEF",
+                    f"## Book: {book.title}",
+                    "",
+                ]
+                
+                for slug, data in pillar_summaries.items():
+                    brief_parts.append(f"### {data['name']}")
+                    brief_parts.append(data['summary'])
+                    brief_parts.append("")
+                
+                brief_text = "\n".join(brief_parts)
+                
+                # Save the brief
+                brief, created = PositioningBrief.objects.update_or_create(
+                    book=book,
+                    defaults={
+                        "brief_text": brief_text,
+                        "pillar_summaries": pillar_summaries,
+                    }
+                )
+                
+                # Build prompt from the newly generated brief
+                base_prompt = _build_prompt_from_brief(brief)
         elif not answers:
             # No pillars and no answers - require one or the other
             return Response({
@@ -1086,6 +1141,39 @@ def create_book(request):
     return Response(data, status=status.HTTP_201_CREATED)
 
 
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_book(request, pk: int):
+    """Update a book's title and core_topic (subtitle). Only the book owner can update."""
+    try:
+        book = Book.objects.get(pk=pk)
+    except Book.DoesNotExist:
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    if book.user != request.user:
+        return Response({"detail": "Only the book owner can update this book"}, status=status.HTTP_403_FORBIDDEN)
+    if "title" in request.data and request.data["title"] is not None:
+        book.title = str(request.data["title"]).strip() or book.title
+    if "core_topic" in request.data and request.data["core_topic"] is not None:
+        book.core_topic = str(request.data["core_topic"]).strip() if request.data["core_topic"] else None
+    book.save()
+    data = BookSerializer(book).data
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def delete_book(request, pk: int):
+    """Delete a book. Only the book owner can delete."""
+    try:
+        book = Book.objects.get(pk=pk)
+    except Book.DoesNotExist:
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    if book.user != request.user:
+        return Response({"detail": "Only the book owner can delete this book"}, status=status.HTTP_403_FORBIDDEN)
+    book.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_book(request, pk: int):
@@ -1372,7 +1460,7 @@ def add_user_context(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def upload_chapter_asset(request):
-    """Upload a file asset for use in generating talking point content."""
+    """Upload a file asset for use in generating talking point content. Book owners and editor collaborators can upload."""
     import traceback
     
     book_id = request.data.get("book_id")
@@ -1388,7 +1476,12 @@ def upload_chapter_asset(request):
     try:
         print(f"[UPLOAD] Starting upload for book_id={book_id}, talking_point_id={talking_point_id}, filename={file.name}")
         
-        book = Book.objects.get(pk=book_id, user=request.user)
+        book = Book.objects.get(pk=book_id)
+        if not user_can_edit_book(request.user, book):
+            return Response(
+                {"detail": "You do not have permission to upload assets for this book"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         talking_point = None
 
         if talking_point_id:
@@ -1456,7 +1549,7 @@ def upload_chapter_asset(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_chapter_assets(request):
-    """List all assets for a book or talking point."""
+    """List all assets for a book or talking point. Book owners and collaborators with access can list."""
     book_id = request.query_params.get("book_id")
     talking_point_id = request.query_params.get("talking_point_id")
 
@@ -1467,7 +1560,12 @@ def list_chapter_assets(request):
         )
 
     try:
-        book = Book.objects.get(pk=book_id, user=request.user)
+        book = Book.objects.get(pk=book_id)
+        if not user_has_book_access(request.user, book):
+            return Response(
+                {"detail": "You do not have permission to view assets for this book"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         assets_query = ChapterAsset.objects.filter(book=book)
 
         if talking_point_id:
@@ -1500,12 +1598,12 @@ def list_chapter_assets(request):
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def delete_chapter_asset(request, asset_id: int):
-    """Delete a chapter asset."""
+    """Delete a chapter asset. Book owners and editor collaborators can delete."""
     try:
         asset = ChapterAsset.objects.select_related("book").get(pk=asset_id)
         
-        # Check if user owns the book
-        if asset.book.user != request.user:
+        # Check if user can edit the book (owner or editor collaborator)
+        if not user_can_edit_book(request.user, asset.book):
             return Response(
                 {"detail": "You do not have permission to delete this asset"},
                 status=status.HTTP_403_FORBIDDEN,
@@ -2661,15 +2759,24 @@ def content_change_detail(request, change_id: int):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
     
     if request.method == "PATCH":
-        # Only book owner can make changes
+        new_status = request.data.get("status")
+        new_step_json = request.data.get("step_json")
+        new_comment = request.data.get("comment")
+        
+        # Change author only can update comment on their own pending change
+        if (change.user == request.user and change.status == "pending" and
+                new_comment is not None and new_status is None and new_step_json is None):
+            change.comment = new_comment if isinstance(new_comment, str) else ""
+            change.save()
+            serializer = ContentChangeSerializer(change)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        
+        # Only book owner can make other changes (status, step_json)
         if book.user != request.user:
             return Response(
                 {"detail": "Only the book owner can modify changes"},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
-        new_status = request.data.get("status")
-        new_step_json = request.data.get("step_json")
         
         # Handle step_json update (for position remapping after other changes are approved)
         if new_step_json is not None and new_status is None:
@@ -2832,275 +2939,304 @@ PILLAR_DEFINITIONS = {
     "business_core": {
         "name": "Business Core",
         "description": "Your business model, revenue streams, and how the book fits into your larger strategy.",
-        "initial_prompt": """I'm your Book Strategist. Let's start with understanding your business foundation.
-
-Tell me about your business: What do you do, who do you serve, and how does this book fit into your larger business strategy?
-
-Be specific about:
-- Your primary business model
-- How you currently generate revenue
-- What role this book will play (lead magnet, authority builder, product, etc.)""",
+        "initial_prompt": """Let's start simple. What do you do for your business, and how does this book fit in?""",
         "depth_criteria": [
-            "Has explained their business model clearly",
-            "Has connected the book to revenue/business goals",
-            "Has identified the strategic role of the book",
+            "Has explained their business",
+            "Has connected the book to business goals",
         ],
         "challenge_prompts": {
-            "vague_business": "You mentioned your business, but I need more specifics. What exactly do you sell or offer? Who pays you and for what?",
-            "missing_book_role": "How specifically will this book generate value for your business? Will it be a lead magnet, a paid product, an authority builder, or something else?",
-            "unclear_model": "When you say 'helping people,' what does that look like in practice? What's the transaction - consulting, courses, products, services?",
+            "vague_business": "Can you tell me a bit more about what you do?",
+            "missing_book_role": "How will this book help your business?",
+            "unclear_model": "What's your main way of making money?",
         }
     },
-    "avatar": {
-        "name": "The Avatar",
-        "description": "Your ideal reader - a specific, detailed persona with demographics, psychographics, and current situation.",
-        "initial_prompt": """Now let's get crystal clear on who you're writing this book for.
-
-Describe your IDEAL reader as if they're a single person sitting across from you:
-- Their age, profession, and life situation
-- What keeps them up at night related to your topic
-- What they've already tried that didn't work
-- Why they would pick up YOUR book specifically
-
-The more specific, the better. Generic answers like 'entrepreneurs' or 'people who want to improve' won't cut it.""",
+    "target_reader": {
+        "name": "Target Reader",
+        "description": "Your ideal reader - a specific, detailed person with desires, motives, and current issues.",
+        "initial_prompt": """Who are you writing this book for? Describe your ideal reader in a few sentences.""",
         "depth_criteria": [
-            "Has described a specific person, not a demographic",
-            "Has identified their current struggles",
-            "Has explained why this reader would choose their book",
+            "Has described their ideal reader",
+            "Has identified reader struggles or needs",
         ],
         "challenge_prompts": {
-            "too_broad": "You're describing a demographic, not a person. Give me a NAME. What's their job title? What did they search for on Google last night at 2am?",
-            "missing_struggles": "What specific problem keeps this person stuck? What have they tried before that failed them?",
-            "no_differentiation": "Why would this person choose YOUR book over the 50 others on this topic? What makes you the author they need?",
+            "too_broad": "Can you be a bit more specific? What's their job or situation?",
+            "missing_struggles": "What problem are they trying to solve?",
+            "no_differentiation": "What makes your book the right one for them?",
         }
     },
     "emotional_resonance": {
         "name": "Emotional Resonance",
-        "description": "The emotional buying psychology of your reader (Red/Yellow/Blue/Green framework).",
-        "initial_prompt": """Let's understand the emotional drivers of your reader.
+        "description": "The emotional buying psychology of your reader.",
+        "initial_prompt": """Imagine your reader is considering buying your book. They're on your website or holding it in a bookstore.
 
-People buy based on four core emotional fears:
-🔴 RED: Fear of BOREDOM - seeks excitement, novelty, challenge
-🟡 YELLOW: Fear of LONELINESS - seeks belonging, connection, acceptance
-🔵 BLUE: Fear of POWERLESSNESS - seeks control, mastery, status
-🟢 GREEN: Fear of INSECURITY - seeks safety, predictability, clarity
+What's going through their mind? What's the main question they're asking themselves?
 
-Based on your ideal reader, which emotional driver is PRIMARY for them? And is there a SECONDARY driver?
+For example, they might be wondering: "Will this make my life more exciting?" or "Will this help me reach my goals faster?" or "Will I feel safer if I buy this?"
 
-Tell me:
-- Which color resonates most with your reader and WHY
-- What emotional relief are they seeking when they buy your book
-- What buying question are they asking themselves?""",
+What question resonates most with your reader?""",
         "depth_criteria": [
-            "Has identified primary emotional driver with evidence",
-            "Has explained the emotional relief they're seeking",
-            "Has articulated the reader's buying question",
+            "Has identified the reader's buying question",
+            "Has some understanding of the emotional driver",
         ],
         "challenge_prompts": {
-            "no_evidence": "You picked a color, but WHY? What evidence from your reader's behavior or language led you to this conclusion?",
-            "surface_level": "Go deeper. When your reader considers buying your book, what fear are they trying to escape? What emotional state do they want to achieve?",
-            "conflicting_signals": "You're mixing signals. A reader seeking 'excitement' (RED) and 'safety' (GREEN) has conflicting drivers. Which is truly PRIMARY?",
+            "no_buying_question": "Imagine they're about to click 'buy' or put it in their cart. What's the question in their mind right then?",
+            "generic_language": "If your reader was explaining their problem to a friend over coffee, what specific words would they use?",
+            "missing_emotional_state": "What feeling are they trying to escape? And what feeling do they want to have instead?",
+            "unclear_connection": "What's behind that question? What fear or desire is driving it?",
         }
     },
-    "north_star": {
-        "name": "The North Star",
+    "book_goal": {
+        "name": "Book Goal",
         "description": "The core transformation promise - the single most important outcome your book delivers.",
-        "initial_prompt": """Every great book has a North Star - a single, clear transformation promise.
+        "initial_prompt": """What's the main transformation your book delivers? 
 
-Complete this sentence with brutal specificity:
-"After reading my book, my reader will be able to ____________, even if they currently ____________."
-
-This should be:
-- Specific and measurable (not vague 'feel better')
-- Achievable through reading your book
-- Compelling enough to justify the reader's time investment
-
-What is THE transformation your book delivers?""",
+Complete this: "After reading my book, my reader will be able to ____________, even if they currently ____________." """,
         "depth_criteria": [
-            "Has a specific, measurable transformation",
-            "Has acknowledged where the reader starts",
-            "Transformation is achievable through the book content",
+            "Has identified the main transformation",
+            "Has some sense of where reader starts",
         ],
         "challenge_prompts": {
-            "too_vague": "'Feel more confident' or 'be happier' isn't specific enough. What will they be able to DO that they couldn't do before?",
-            "not_measurable": "How would the reader KNOW they've achieved this transformation? What evidence would they see in their life?",
-            "too_ambitious": "Can your book actually deliver this? Or does it require coaching, courses, or years of practice? Be honest about what a BOOK can achieve.",
+            "too_vague": "What will they be able to do that they can't do now?",
+            "not_measurable": "How will they know they've achieved this?",
+            "too_ambitious": "Is this something a book can realistically help with?",
         }
     },
     "pain_points": {
         "name": "Pain Points",
-        "description": "The specific, visceral struggles your reader faces - not surface problems, but deep pain.",
-        "initial_prompt": """Now let's excavate the REAL pain your reader experiences.
-
-Not surface-level annoyances, but the pain that:
-- Wakes them up at 3am
-- Makes them feel shame or frustration
-- They might not even admit to others
-
-List 3-5 specific pain points your reader experiences. For each one:
-- Describe it in THEIR words (how they'd describe it to a friend)
-- Explain the downstream consequences (what it costs them)
-- Rate its intensity (annoying, frustrating, or unbearable)
-
-Be visceral. Generic pain = generic book.""",
+        "description": "The specific struggles your reader faces ",
+        "initial_prompt": """What are the main struggles or pain points your reader faces? Share 2-3 of the biggest ones.""",
         "depth_criteria": [
-            "Has identified 3+ specific pain points",
-            "Pain points are described in reader's language",
-            "Has connected pain to real consequences",
+            "Has identified 2+ pain points",
+            "Pain points are reasonably specific",
         ],
         "challenge_prompts": {
-            "too_surface": "That's a symptom, not the real pain. Dig deeper. What's the COST of this problem? How does it affect their relationships, career, self-image?",
-            "your_words": "You're describing this like a consultant. How would your READER describe this pain point to their spouse at dinner?",
-            "missing_consequences": "So what? Why does this pain point matter? What happens if they don't solve it?",
+            "too_surface": "What's the real impact of this problem?",
+            "your_words": "How would your reader describe this to a friend?",
+            "missing_consequences": "Why does this matter to them?",
         }
     },
     "the_shift": {
-        "name": "The Shift",
+        "name": "Misconceptions",
         "description": "The false beliefs your reader holds that keep them stuck - and the new beliefs your book instills.",
-        "initial_prompt": """Your reader is stuck because of FALSE BELIEFS they hold. Your book must SHIFT these beliefs.
-
-For each false belief your reader holds:
-1. State the FALSE BELIEF they currently have
-2. Explain WHY they believe this (where did it come from?)
-3. State the NEW BELIEF your book will install
-4. Describe the EVIDENCE you'll provide to make this shift happen
-
-Example:
-- False: "I need more willpower to lose weight"
-- Why: Diet culture + past failed diets
-- New: "Weight loss is about systems, not willpower"
-- Evidence: Research on habit formation + case studies
-
-What are the 2-3 core belief shifts your book creates?""",
+        "initial_prompt": """What false belief does your reader currently hold that keeps them stuck? And what new belief will your book help them adopt?""",
         "depth_criteria": [
-            "Has identified 2+ false beliefs",
-            "Has explained the origin of each false belief",
-            "Has articulated the replacement beliefs",
-            "Has evidence to support the shift",
+            "Has identified at least one false belief",
+            "Has articulated the new belief",
         ],
         "challenge_prompts": {
-            "not_a_belief": "That's not a belief, it's a behavior or symptom. What do they BELIEVE that causes that behavior?",
-            "missing_origin": "Where did this false belief come from? If you don't understand the origin, you can't effectively dismantle it.",
-            "no_evidence": "Why should they believe your new belief? What proof, research, or case studies will you provide?",
+            "not_a_belief": "What do they believe that causes that?",
+            "missing_origin": "Where did that belief come from?",
+            "no_evidence": "What will help them believe the new way?",
         }
     },
     "the_edge": {
-        "name": "The Edge",
+        "name": "Differentiation",
         "description": "Your differentiation - what makes your approach unique compared to everything else on this topic.",
-        "initial_prompt": """There are likely dozens of books on your topic. Why should anyone read YOURS?
-
-Tell me about your EDGE:
-
-1. What do your competitors/other authors get WRONG about this topic?
-2. What unique insight, framework, or approach do YOU bring?
-3. What's your unfair advantage? (Experience, research, perspective, methodology)
-4. Complete this: "Unlike other books on [topic], my book is the only one that ____________"
-
-Be ruthlessly honest. If you can't articulate your edge, readers will have no reason to choose you.""",
+        "initial_prompt": """What makes your book different from others on this topic? What's your unique approach or insight?""",
         "depth_criteria": [
-            "Has identified what competitors get wrong",
-            "Has articulated a unique approach or insight",
-            "Has an unfair advantage they can leverage",
-            "Can complete the differentiation statement",
+            "Has identified their unique approach or differentiation",
+            "Has some sense of what makes them different",
         ],
         "challenge_prompts": {
-            "no_competitors": "Don't tell me there are no competitors. Even if not books, what other solutions exist? What do they get wrong?",
-            "weak_differentiation": "'More practical' or 'easier to read' isn't an edge. What do you KNOW or BELIEVE that others don't?",
-            "missing_advantage": "What gives you the RIGHT to write this book? Experience? Research? A unique perspective? What's your unfair advantage?",
+            "no_competitors": "What other solutions exist? What do they miss?",
+            "weak_differentiation": "What do you know or believe that's different?",
+            "missing_advantage": "What's your unique perspective or experience?",
         }
     },
     "the_foundation": {
         "name": "The Foundation",
         "description": "Your content pillars - the 3-5 core themes or areas your book will cover.",
-        "initial_prompt": """Now let's structure the FOUNDATION of your book - the content pillars.
-
-Content pillars are the 3-5 major themes or areas your book will address. They should:
-- Map directly to your reader's pain points
-- Build toward your North Star transformation
-- Be distinct from each other (no overlap)
-
-For each pillar:
-1. Name it clearly
-2. Explain what pain point it addresses
-3. Describe the key insight or outcome for this pillar
-
-These pillars will become the backbone of your book structure.""",
+        "initial_prompt": """What are the 3-5 main themes or topics your book will cover? List them briefly.""",
         "depth_criteria": [
-            "Has identified 3-5 distinct pillars",
-            "Each pillar maps to a pain point",
-            "Pillars build toward the transformation",
-            "Pillars are distinct without overlap",
+            "Has identified 3+ content pillars or themes",
+            "Pillars are reasonably distinct",
         ],
         "challenge_prompts": {
-            "too_few": "You need at least 3 substantial pillars to create a book-length work. What other major areas does your topic require?",
-            "overlap": "Two of your pillars seem to overlap. How are they distinct? Could they be combined?",
-            "missing_mapping": "How does this pillar connect to your reader's pain points? If it doesn't solve a pain, why include it?",
-            "not_sequential": "Do these pillars build on each other? What's the logical order for a reader's journey?",
+            "too_few": "What other major areas should the book cover?",
+            "overlap": "How are these different from each other?",
+            "missing_mapping": "How does this connect to your reader's needs?",
+            "not_sequential": "What order makes sense for the reader?",
         }
     },
     "the_authority": {
         "name": "The Authority",
         "description": "Your framework or strong opinion - the signature idea that establishes your authority.",
-        "initial_prompt": """Finally, let's establish your AUTHORITY. Every memorable book has a signature framework or strong opinion.
-
-This could be:
-- A proprietary framework (like "The 4-Hour" anything, or "Atomic Habits")
-- A contrarian opinion (challenging industry conventional wisdom)
-- A unique methodology you've developed
-- A new way of thinking about an old problem
-
-Tell me:
-1. What is your signature framework or strong opinion?
-2. Why is this YOUR framework to own? (credibility, experience, research)
-3. What's the one-liner that captures it?
-4. Why will this framework be MEMORABLE?
-
-This is what people will remember about your book. Make it count.""",
+        "initial_prompt": """Do you have a signature framework, methodology, or strong opinion that your book is built around? What is it?""",
         "depth_criteria": [
-            "Has a clear framework or strong opinion",
-            "Has credibility to own this framework",
-            "Has a memorable one-liner",
-            "Framework is distinct and ownable",
+            "Has identified a framework or strong opinion",
+            "Has some credibility or basis for it",
         ],
         "challenge_prompts": {
-            "generic_framework": "This framework sounds generic. What makes it YOURS? What unique twist or insight does it include?",
-            "no_credibility": "Why should readers trust YOU with this framework? What experience or research backs it up?",
-            "not_memorable": "Would someone remember this framework a week after reading your book? How can you make it stickier?",
-            "too_complex": "This framework is too complex to remember. Can you distill it to a simple principle or acronym?",
+            "generic_framework": "What makes this uniquely yours?",
+            "no_credibility": "What's your experience or basis for this?",
+            "not_memorable": "How can you make this easier to remember?",
+            "too_complex": "Can you simplify this a bit?",
         }
     },
 }
 
+def generate_initial_prompt(pillar_slug: str, global_summary: str = "") -> str:
+    pillar = PILLAR_DEFINITIONS[pillar_slug]
 
-def get_pillar_system_prompt(pillar_slug: str, global_summary: str = "") -> str:
+    system_instruction = f"""
+You are a thoughtful book positioning coach.
+
+Your job is to open a conversation and invite the user to share any information related to the topic (PDF, Word, text files, etc.) about the following pillar in a natural, non-programmatic way.
+
+Pillar name: {pillar['name']}
+Pillar description: {pillar['description']}
+
+Guidelines:
+- Do NOT sound like a questionnaire
+- Start by briefly explaining why this pillar matters
+- Invite the user to share existing materials that contain information that would be helpful for this pillar or examples IF they have them (do not ask directly)
+- When inviting the user to share information, use the language of the pillar and the global summary to make the prompt feel contectual
+- Then gently prompt reflection with an example or imaginative framing
+- Keep it conversational and human
+- Do not mention "pillars" or "steps"
+- Keep it short and concise two paragraphs max. 
+- Tailor the way you ask the user to share files like notes and document by mentioning what specif types of files/content would be helpful.
+"""
+
+    if global_summary:
+        system_instruction += f"""
+Here is context the user has already shared about the book:
+{global_summary}
+
+Use this to make the prompt feel contextual, but do not repeat it verbatim.
+"""
+
+    return system_instruction
+
+
+def generate_ai_initial_greeting(pillar_slug: str, global_summary: str = "") -> str:
+    # 1. Get the "Blueprint" for the AI
+    system_instruction = generate_initial_prompt(pillar_slug, global_summary)
+    
+    
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": "Please introduce the pillar and start the conversation for this pillar encourage them to upload files."}
+        ],
+        temperature=0.7 
+    )
+    
+    return response.choices[0].message.content
+
+
+
+def get_contextual_initial_prompt(pillar_slug: str, global_summary: str = "", book_title: str = "", pillar: PositioningPillar = None) -> str:
+    """
+    Generate a contextual initial prompt using AI generation instead of hard-coded templates.
+    """
+    
+    # 1. Check for existing assets (files already uploaded)
+    has_assets = False
+    if pillar:
+        has_assets = PillarAsset.objects.filter(pillar=pillar).exists()
+
+    # 2. If no assets exist, we want the AI to ask for them naturally.
+    # We call your AI generation function here.
+    if not has_assets:
+        # We pass the global_summary so the AI can say "I see you're writing about [Topic]..."
+        return generate_ai_initial_greeting(pillar_slug, global_summary)
+
+    # 3. If assets DO exist, the user has already provided info.
+    # You can either return a different AI prompt or fall back to the base prompt.
+    # To keep it consistent, let's let the AI handle this too:
+    return generate_ai_initial_greeting(pillar_slug, global_summary)
+
+
+def get_pillar_system_prompt(pillar_slug: str, global_summary: str = "", pillar_status: str = None, pillar: PositioningPillar = None) -> str:
     """Build the system prompt for a pillar conversation."""
     pillar_def = PILLAR_DEFINITIONS.get(pillar_slug, {})
     
-    system_prompt = f"""You are a World-Class Book Strategist and Positioning Architect. You are conducting a deep-dive interview on the "{pillar_def.get('name', pillar_slug)}" pillar.
+    # Special guidance for emotional_resonance pillar
+    emotional_resonance_guidance = ""
+    if pillar_slug == "emotional_resonance":
+        emotional_resonance_guidance = """
+SPECIAL INSTRUCTIONS FOR EMOTIONAL RESONANCE:
+- DO NOT ask the author about "Red/Yellow/Blue/Green" types - they don't know this framework
+- DO NOT ask direct questions like "What kind of language do they use?" - this doesn't work for RAG
+- ALWAYS USE CONTEXT from other pillars (book topic, reader persona, pain points) to make prompts SPECIFIC and RELEVANT
+- Instead, GUIDE THE CONVERSATION IN ORDER through prompts that naturally extract information:
 
-ROLE: You are a consultant, NOT a note-taker. You challenge vague answers, probe for specifics, and don't accept surface-level responses.
+CONVERSATION FLOW (follow this order):
+1. FIRST: Get the buying question through scenarios/examples - USE BOOK CONTEXT:
+   - If you have context about the book topic, incorporate it: "Imagine your reader is considering your book about [TOPIC]. What's going through their mind? What question are they asking themselves?"
+   - If you know their reader persona, use it: "Your reader [PERSONA DETAILS] is considering your book. What's the main thing they're wondering about?"
+   - Make it SPECIFIC to their book, not generic
+   - Listen for buying questions like: "Will this make my life more exciting?" or "Will this help me reach my goals faster?" or "Will I feel safer?" or "Will others accept me more?"
+
+2. SECOND: Extract language naturally through conversation - USE BOOK CONTEXT:
+   - DON'T ask "What language do they use?"
+   - Instead, use their book topic: "If your reader was explaining their struggle with [TOPIC] to a friend, what specific words would they use?"
+   - Or: "Tell me about a time when your reader might be struggling with [SPECIFIC PROBLEM FROM CONTEXT]. How would they describe what they're feeling?"
+   - Make prompts SPECIFIC to their book's topic and their reader's situation
+   - Listen for specific words, phrases, and emotional language in their descriptions
+
+3. THIRD: Understand emotional state through context:
+   - Use book context: "Given that your book helps with [TOPIC], what feeling are they trying to escape? And what feeling do they want instead?"
+   - Or: "What's the emotional cost of their current situation with [TOPIC]?"
+   - Extract the "escaping" and "seeking" emotional states from their answers
+
+4. INFER the emotional type from their answers:
+   - "Will this make my life more exciting?" → RED (Boredom)
+   - "Will others like and accept me more?" → YELLOW (Loneliness)
+   - "Will this help me reach my goals faster?" → BLUE (Powerlessness)
+   - "Will I feel safer if I buy this?" → GREEN (Insecurity)
+
+KEY PRINCIPLES:
+- ALWAYS incorporate book topic, reader persona, and pain points from other pillars into your prompts
+- Make prompts SPECIFIC to their book, not generic
+- Use prompts and scenarios, NOT direct questions
+- Guide them to share naturally through conversation
+- Extract information from their descriptions, don't ask them to list it
+- One step at a time - don't jump ahead
+"""
+    
+    complete_note = ""
+    if pillar_status == "COMPLETE":
+        complete_note = "\nNOTE: This pillar is already marked as complete. The user is adding more information. Don't mark it complete again unless they explicitly ask to complete it."
+    
+    # Get assets context if pillar is provided
+    assets_context = ""
+    if pillar:
+        assets_context = get_pillar_assets_context(pillar)
+        if assets_context:
+            assets_context = f"\n{assets_context}\n\nIMPORTANT: Use information from these uploaded materials when asking questions. Reference specific details from the materials to make your prompts more relevant and avoid asking for information that's already in the materials."
+    
+    system_prompt = f"""You are a friendly Book Strategist helping the author clarify their "{pillar_def.get('name', pillar_slug)}" pillar.
 
 PILLAR FOCUS: {pillar_def.get('description', '')}
+{emotional_resonance_guidance}
+{complete_note}
+{assets_context}
 
-INTERROGATION RULES:
-1. If an answer is vague or generic → ask "WHY specifically?" or "HOW exactly?"
-2. If the user says "I don't know" → help them discover the answer through targeted questions
-3. If differentiation is weak → challenge with "What do competitors get wrong?"
-4. NEVER accept the first answer if it lacks depth
-5. Push for specifics: names, numbers, examples, scenarios
+CONVERSATION STYLE:
+- Be conversational and supportive, not interrogative
+- Ask ONE question at a time (don't overwhelm)
+- Keep follow-ups short and focused
+- If an answer is vague, gently ask for one specific detail
+- Help them discover answers through simple, friendly questions
 
-DEPTH CRITERIA FOR COMPLETION:
+DEPTH CRITERIA (aim for these, but be flexible):
 {chr(10).join('- ' + c for c in pillar_def.get('depth_criteria', []))}
 
 WHEN TO MARK COMPLETE:
-Only mark this pillar as COMPLETE when ALL depth criteria are met AND the answers are "chapter-ready" (specific enough to write compelling book content from).
+Mark complete when you have enough information to understand the key points. Don't require perfection - good enough is fine.
+If the pillar is already complete, only mark it complete again if the user explicitly asks or if significant new information warrants it.
 
-When the pillar IS complete, end your response with EXACTLY this marker on its own line:
-[{pillar_def.get('name', pillar_slug).upper().replace(' ', '_')}: COMPLETE]
+When complete, end with: [{pillar_def.get('name', pillar_slug).upper().replace(' ', '_')}: COMPLETE]
 
-{f"GLOBAL CONTEXT (from other pillars):{chr(10)}{global_summary}" if global_summary else ""}
+{f"CONTEXT FROM OTHER PILLARS:{chr(10)}{global_summary}{chr(10)}IMPORTANT: Use this context to make your prompts SPECIFIC to their book. Don't ask generic questions - incorporate their book topic, reader persona, and pain points into your prompts." if global_summary else ""}
 
-Remember: Generic positioning = generic books. Be the consultant who refuses to let the author settle for mediocrity."""
+Keep it friendly and conversational. One question at a time."""
 
     return system_prompt
 
@@ -3130,12 +3266,12 @@ CONVERSATION:
 Evaluate and return JSON:
 {{
     "depth_score": 0-100 (how thoroughly the criteria are addressed),
-    "is_complete": true/false (all criteria met at chapter-ready depth),
+    "is_complete": true/false (most criteria met with reasonable detail),
     "missing": ["list of criteria not yet met"],
     "reason": "brief explanation"
 }}
 
-Be STRICT. Only mark complete if answers are specific enough to write compelling book content from."""
+Be LENIENT. Mark complete if the author has provided reasonable answers to most criteria. Perfection is not required."""
 
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     
@@ -3143,7 +3279,7 @@ Be STRICT. Only mark complete if answers are specific enough to write compelling
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are evaluating positioning interview depth. Be strict - generic answers should fail."},
+                {"role": "system", "content": "You are evaluating positioning interview depth. Be lenient - reasonable answers should pass."},
                 {"role": "user", "content": evaluation_prompt},
             ],
             temperature=0.3,
@@ -3241,10 +3377,9 @@ def pillars_list_initialize(request, book_id: int):
     # Return all pillars with their status
     pillars = PositioningPillar.objects.filter(book=book).order_by("order")
     
-    # Calculate progress
+    # Calculate progress - count only COMPLETE pillars out of 9 total
     completed_count = pillars.filter(status="COMPLETE").count()
-    total_count = pillars.count() or 9  # Default to 9 if not initialized
-    progress_percentage = int((completed_count / total_count) * 100)
+    progress_percentage = int((completed_count / 9) * 100)
     
     # Find current active pillar
     active_pillar = pillars.filter(status="ACTIVE").first()
@@ -3287,18 +3422,15 @@ def pillar_chat(request, pillar_id: int):
     except PositioningPillar.DoesNotExist:
         return Response({"detail": "Pillar not found"}, status=status.HTTP_404_NOT_FOUND)
     
-    if pillar.status == "LOCKED":
-        return Response(
-            {"detail": "This pillar is locked. Complete previous pillars first."},
-            status=status.HTTP_403_FORBIDDEN
-        )
+    # Removed locking restriction - all pillars are now accessible
     
     if request.method == "GET":
         messages = PillarChatMessage.objects.filter(pillar=pillar).order_by("created_at")
         
-        # If no messages, return the initial prompt
+        # If no messages, return the initial prompt (contextual if available)
         if not messages.exists():
-            initial_prompt = PILLAR_DEFINITIONS.get(pillar.slug, {}).get("initial_prompt", "")
+            global_summary = build_global_summary(pillar.book, exclude_pillar=pillar)
+            initial_prompt = get_contextual_initial_prompt(pillar.slug, global_summary, pillar.book.title, pillar)
             return Response({
                 "pillar_id": pillar_id,
                 "pillar_name": pillar.name,
@@ -3310,7 +3442,7 @@ def pillar_chat(request, pillar_id: int):
                 ],
                 "state_emission": {
                     "current_pillar": pillar.slug,
-                    "progress_percentage": 0,
+                    "progress_percentage": int((pillar.book.positioning_pillars.filter(status="COMPLETE").count() / 9) * 100),
                     "pillars_completed": [],
                 }
             }, status=status.HTTP_200_OK)
@@ -3337,11 +3469,24 @@ def pillar_chat(request, pillar_id: int):
         if not user_message:
             return Response({"detail": "message is required"}, status=status.HTTP_400_BAD_REQUEST)
         
-        # If pillar is already complete, don't allow more messages
-        if pillar.status == "COMPLETE":
-            return Response(
-                {"detail": "This pillar is already complete."},
-                status=status.HTTP_400_BAD_REQUEST
+        # Allow messages even if pillar is complete - users can add more information
+        # Build conversation history for AI (before saving user message to check if this is first message)
+        messages_history = list(PillarChatMessage.objects.filter(pillar=pillar).order_by("created_at"))
+        
+        # Build global summary from other pillars
+        global_summary = build_global_summary(pillar.book, exclude_pillar=pillar)
+        
+        # Check if this is the first message (need to include initial prompt)
+        # Use contextual prompt if available
+        initial_prompt = get_contextual_initial_prompt(pillar.slug, global_summary, pillar.book.title, pillar)
+        
+        # Save initial prompt to database if this is the first message
+        if not any(m.role == "assistant" for m in messages_history):
+            PillarChatMessage.objects.create(
+                pillar=pillar,
+                role="assistant",
+                content=initial_prompt,
+                state_emission=None
             )
         
         # Save user message
@@ -3351,28 +3496,35 @@ def pillar_chat(request, pillar_id: int):
             content=user_message
         )
         
-        # Build conversation history for AI
+        # Rebuild conversation history after saving messages
         messages_history = list(PillarChatMessage.objects.filter(pillar=pillar).order_by("created_at"))
-        
-        # Check if this is the first message (need to include initial prompt)
-        pillar_def = PILLAR_DEFINITIONS.get(pillar.slug, {})
-        initial_prompt = pillar_def.get("initial_prompt", "")
-        
-        # Build global summary from other pillars
-        global_summary = build_global_summary(pillar.book, exclude_pillar=pillar)
         
         # Build messages for OpenAI
         openai_messages = [
-            {"role": "system", "content": get_pillar_system_prompt(pillar.slug, global_summary)}
+            {"role": "system", "content": get_pillar_system_prompt(pillar.slug, global_summary, pillar.status, pillar)}
         ]
         
-        # Add initial prompt if not in history
-        if not any(m.role == "assistant" for m in messages_history[:-1] if messages_history):
-            openai_messages.append({"role": "assistant", "content": initial_prompt})
-        
-        # Add conversation history
+        # Add conversation history (which now includes the initial prompt if it was just saved)
         for msg in messages_history:
             openai_messages.append({"role": msg.role, "content": msg.content})
+        
+        # Add special instruction if user said "no" to materials
+        # Check if this is the first user message (after initial prompt)
+        user_messages = [m for m in messages_history if m.role == "user"]
+        if len(user_messages) == 1:  # Only one user message
+            user_msg = user_messages[0].content.lower().strip()
+            if user_msg in ["no", "nope", "none", "i don't have any", "i don't have materials", "no materials"]:
+                # Add instruction to system to provide the actual pillar prompt
+                base_prompt = PILLAR_DEFINITIONS.get(pillar.slug, {}).get("initial_prompt", "")
+                # Make it contextual if we have context
+                if global_summary and pillar.slug == "emotional_resonance":
+                    # Use the contextual version
+                    contextual_prompt = get_contextual_initial_prompt(pillar.slug, global_summary, pillar.book.title, None)  # Pass None to skip materials check
+                    if contextual_prompt != base_prompt:
+                        base_prompt = contextual_prompt
+                # Add instruction to system message
+                system_msg = openai_messages[0]["content"]
+                openai_messages[0]["content"] = system_msg + f"\n\nSPECIAL INSTRUCTION: The user just said they don't have materials. Immediately provide the actual pillar prompt: {base_prompt}"
         
         # Generate AI response
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -3395,23 +3547,63 @@ def pillar_chat(request, pillar_id: int):
             all_messages = list(PillarChatMessage.objects.filter(pillar=pillar).order_by("created_at"))
             depth_score, eval_complete, reason = evaluate_pillar_depth(pillar, all_messages)
             
+            was_complete = pillar.status == "COMPLETE"
+            previous_depth_score = pillar.depth_score
+            
+            # If pillar was already complete, preserve the higher depth score
+            # (don't let it decrease when adding more info)
+            if was_complete:
+                depth_score = max(depth_score, previous_depth_score)
+            
             # Update pillar depth score
             pillar.depth_score = depth_score
             
-            # If complete (either by marker or evaluation), update status
-            if is_complete or (eval_complete and depth_score >= 80):
+            # If complete (either by marker or evaluation), update status (lowered threshold to 60%)
+            if is_complete or (eval_complete and depth_score >= 85):
                 pillar.status = "COMPLETE"
+                # Regenerate summary when status changes or when new info is added to completed pillar
                 pillar.summary = generate_pillar_summary(pillar)
                 pillar.save()
                 
-                # Unlock next pillar
-                next_pillar = pillar.unlock_next_pillar()
+                # If this is the emotional_resonance pillar, infer and set the audience_tag
+                if pillar.slug == "emotional_resonance" and not was_complete:
+                    audience_tag = infer_audience_tag_from_pillars(pillar.book)
+                    if audience_tag:
+                        pillar.book.audience_tag = audience_tag
+                        pillar.book.save()
+                        print(f"Set audience_tag for book {pillar.book.id}: {audience_tag}")
+                
+                # Unlock next pillar only if it wasn't already complete
+                if not was_complete:
+                    next_pillar = pillar.unlock_next_pillar()
+                else:
+                    next_pillar = None
+                
+                # Invalidate positioning brief if it exists (will be regenerated on next view)
+                try:
+                    PositioningBrief.objects.filter(book=pillar.book).delete()
+                except:
+                    pass
             else:
-                pillar.save()
+                # If pillar was complete but no longer meets criteria, keep it complete but update summary
+                if was_complete:
+                    # Keep it complete even if evaluation says otherwise (user is adding info)
+                    pillar.status = "COMPLETE"
+                    # Regenerate summary with new information
+                    pillar.summary = generate_pillar_summary(pillar)
+                    pillar.save()
+                    # Invalidate positioning brief if it exists (will be regenerated on next view)
+                    try:
+                        PositioningBrief.objects.filter(book=pillar.book).delete()
+                    except:
+                        pass
+                else:
+                    pillar.save()
             
             # Build state emission
             all_pillars = PositioningPillar.objects.filter(book=pillar.book).order_by("order")
             completed_pillars = [p.slug for p in all_pillars if p.status == "COMPLETE"]
+            # Progress is based on COMPLETE pillars only
             progress = int((len(completed_pillars) / 9) * 100)
             
             state_emission = {
@@ -3460,44 +3652,54 @@ def pillar_mark_complete(request, pillar_id: int):
     except PositioningPillar.DoesNotExist:
         return Response({"detail": "Pillar not found"}, status=status.HTTP_404_NOT_FOUND)
     
-    if pillar.status == "LOCKED":
-        return Response(
-            {"detail": "Cannot complete a locked pillar"},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    # Removed locking restriction - all pillars are now accessible
     
-    if pillar.status == "COMPLETE":
-        return Response(
-            {"detail": "Pillar is already complete"},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    # Allow re-marking as complete to regenerate summary
+    was_complete = pillar.status == "COMPLETE"
     
     # Validate depth before allowing manual completion
     messages = list(PillarChatMessage.objects.filter(pillar=pillar).order_by("created_at"))
     
-    if len([m for m in messages if m.role == "user"]) < 2:
+    if len([m for m in messages if m.role == "user"]) < 1:
         return Response(
-            {"detail": "Not enough conversation depth. Continue the discussion."},
+            {"detail": "Please have at least one conversation exchange before marking complete."},
             status=status.HTTP_400_BAD_REQUEST
         )
     
     depth_score, is_deep_enough, reason = evaluate_pillar_depth(pillar, messages)
     
-    if depth_score < 60:
+    if depth_score < 50:
         return Response({
-            "detail": f"Pillar depth score is {depth_score}%. Needs at least 60% for manual completion.",
+            "detail": f"Pillar depth score is {depth_score}%. Needs at least 50% for manual completion.",
             "reason": reason,
             "depth_score": depth_score,
         }, status=status.HTTP_400_BAD_REQUEST)
     
-    # Mark complete
+    # Mark complete (or re-mark if already complete)
     pillar.status = "COMPLETE"
     pillar.depth_score = depth_score
     pillar.summary = generate_pillar_summary(pillar)
     pillar.save()
     
-    # Unlock next pillar
-    next_pillar = pillar.unlock_next_pillar()
+    # If this is the emotional_resonance pillar, infer and set the audience_tag
+    if pillar.slug == "emotional_resonance" and not was_complete:
+        audience_tag = infer_audience_tag_from_pillars(pillar.book)
+        if audience_tag:
+            pillar.book.audience_tag = audience_tag
+            pillar.book.save()
+            print(f"Set audience_tag for book {pillar.book.id}: {audience_tag}")
+    
+    # Unlock next pillar only if it wasn't already complete
+    if not was_complete:
+        next_pillar = pillar.unlock_next_pillar()
+    else:
+        next_pillar = None
+    
+    # Invalidate positioning brief if it exists (will be regenerated on next view)
+    try:
+        PositioningBrief.objects.filter(book=pillar.book).delete()
+    except:
+        pass
     
     return Response({
         "success": True,
@@ -3550,6 +3752,14 @@ def get_positioning_brief(request, book_id: int):
             "summary": p.summary or "",
             "depth_score": p.depth_score,
         }
+    
+    # If audience_tag doesn't exist yet, try to infer it from emotional_resonance pillar
+    if not book.audience_tag:
+        audience_tag = infer_audience_tag_from_pillars(book)
+        if audience_tag:
+            book.audience_tag = audience_tag
+            book.save()
+            print(f"Set audience_tag for book {book.id} during brief generation: {audience_tag}")
     
     # Build the full brief
     brief_parts = [
@@ -3608,5 +3818,882 @@ def pillar_reset(request, pillar_id: int):
     return Response({
         "success": True,
         "pillar_status": "ACTIVE",
+    }, status=status.HTTP_200_OK)
+
+
+def infer_audience_tag_from_pillars(book: Book) -> dict | None:
+    """
+    Infer the emotional audience type tag from the emotional_resonance pillar conversation.
+    This extracts the emotional type (RED/YELLOW/BLUE/GREEN) from the positioning pillars.
+    """
+    try:
+        # Get the emotional_resonance pillar
+        emotional_pillar = PositioningPillar.objects.filter(
+            book=book,
+            slug="emotional_resonance",
+            status="COMPLETE"
+        ).first()
+        
+        if not emotional_pillar:
+            return None
+        
+        # Get all messages from the emotional_resonance pillar
+        messages = list(PillarChatMessage.objects.filter(pillar=emotional_pillar).order_by("created_at"))
+        
+        if not messages:
+            return None
+        
+        # Build conversation text
+        conversation = "\n".join([
+            f"{msg.role.upper()}: {msg.content}" 
+            for msg in messages 
+            if msg.role in ["user", "assistant"]
+        ])
+        
+        # Also get context from other completed pillars
+        global_summary = build_global_summary(book, exclude_pillar=emotional_pillar)
+        
+        # Build prompt to infer emotional type from the conversation
+        prompt_parts = [
+            "You are an expert at analyzing emotional buying psychology.",
+            "Your task is to classify the book's intended reader into one or two emotional audience types based on the Emotional Resonance pillar conversation.",
+            "",
+            "EMOTIONAL AUDIENCE TYPES:",
+            "",
+            "🔴 RED - Feared emotion: Boredom | Seeks: Stimulation, challenge, novelty",
+            "   Buying question: 'Will this make my life more exciting?'",
+            "",
+            "🟡 YELLOW - Feared emotion: Loneliness | Seeks: Belonging, joy, connection",
+            "   Buying question: 'Will others like and accept me more if I buy this?'",
+            "",
+            "🔵 BLUE - Feared emotion: Powerlessness | Seeks: Mastery, control, status",
+            "   Buying question: 'Will this help me reach my goals faster?'",
+            "",
+            "🟢 GREEN - Feared emotion: Insecurity | Seeks: Safety, clarity, predictability",
+            "   Buying question: 'Will I feel safer if I buy this?'",
+            "",
+        ]
+        
+        if global_summary:
+            prompt_parts.extend([
+                "",
+                "CONTEXT FROM OTHER PILLARS:",
+                global_summary,
+            ])
+        
+        prompt_parts.extend([
+            "",
+            "EMOTIONAL RESONANCE CONVERSATION:",
+            "=" * 50,
+            conversation,
+            "=" * 50,
+            "",
+            "ANALYSIS INSTRUCTIONS:",
+            "1. Look for buying questions mentioned in the conversation",
+            "2. Analyze the language used (urgency, safety, excitement, belonging, control)",
+            "3. Identify what emotional relief the reader is seeking",
+            "4. Match to buying questions (boredom→RED, loneliness→YELLOW, powerlessness→BLUE, insecurity→GREEN)",
+            "5. Assign a PRIMARY color (required) and optionally a SECONDARY color if there's strong evidence",
+            "6. Provide confidence score (0-1) and clear reasoning",
+            "",
+            "Return JSON only in this exact format:",
+            '{"primary": "RED"|"BLUE"|"GREEN"|"YELLOW", "secondary": "RED"|"BLUE"|"GREEN"|"YELLOW"|null, "confidence": 0.0-1.0, "reasoning": "explanation"}',
+        ])
+        
+        prompt = "\n".join(prompt_parts)
+        
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are an expert at analyzing emotional buying psychology. Return only valid JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=300,
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(completion.choices[0].message.content.strip())
+        
+        # Convert to dict format for JSONField storage
+        tag_result = {
+            "primary": result.get("primary", "").upper(),
+            "confidence": result.get("confidence", 0.0),
+            "reasoning": result.get("reasoning", ""),
+        }
+        
+        if result.get("secondary"):
+            tag_result["secondary"] = result.get("secondary", "").upper()
+        
+        # Validate primary color
+        if tag_result["primary"] not in ["RED", "YELLOW", "BLUE", "GREEN"]:
+            return None
+        
+        return tag_result
+        
+    except Exception as exc:
+        print(f"Error inferring audience tag from pillars: {exc}")
+        return None
+
+
+def get_pillar_assets_context(pillar: PositioningPillar) -> str:
+    """Get extracted text from all assets for a pillar to include in context."""
+    assets = PillarAsset.objects.filter(pillar=pillar).exclude(extracted_text__isnull=True).exclude(extracted_text="")
+    if not assets.exists():
+        return ""
+    
+    context_parts = ["UPLOADED MATERIALS FOR THIS PILLAR:"]
+    for asset in assets:
+        # Skip assets with error messages
+        if asset.extracted_text and (asset.extracted_text.startswith("[Error") or asset.extracted_text.startswith("[Unsupported")):
+            continue
+        
+        context_parts.append(f"\n--- {asset.filename} ({asset.file_type}) ---")
+        # Limit extracted text to 2000 chars per file to avoid token limits
+        text = asset.extracted_text[:2000] if asset.extracted_text else ""
+        if len(asset.extracted_text or "") > 2000:
+            text += "\n[... content truncated ...]"
+        context_parts.append(text)
+    
+    # If no valid assets, return empty string
+    if len(context_parts) == 1:  # Only the header
+        return ""
+    
+    return "\n".join(context_parts)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def upload_pillar_asset(request, pillar_id: int):
+    """Upload a file asset for a positioning pillar."""
+    file = request.FILES.get("file")
+    
+    if not file:
+        return Response(
+            {"detail": "file is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    
+    try:
+        pillar = PositioningPillar.objects.select_related("book").get(pk=pillar_id)
+        if pillar.book.user != request.user:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    except PositioningPillar.DoesNotExist:
+        return Response({"detail": "Pillar not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Determine file type from extension
+    filename = file.name
+    file_ext = filename.split(".")[-1].lower() if "." in filename else ""
+    allowed_extensions = ["txt", "pdf", "mp3", "csv", "docx", "doc"]
+    
+    if file_ext not in allowed_extensions:
+        return Response(
+            {"detail": f"File type .{file_ext} not allowed. Allowed types: {', '.join(allowed_extensions)}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    
+    # Create asset
+    asset = PillarAsset.objects.create(
+        pillar=pillar,
+        file=file,
+        filename=filename,
+        file_type=file_ext,
+        user=request.user,
+    )
+    
+    # Extract text from file
+    extracted_text = None
+    try:
+        # Create a temporary ChapterAsset-like object for extraction
+        class TempAsset:
+            def __init__(self, pillar_asset):
+                self.file = pillar_asset.file
+                self.file_type = pillar_asset.file_type
+                self.filename = pillar_asset.filename
+        
+        temp_asset = TempAsset(asset)
+        extracted_text = extract_text_from_file(temp_asset)
+        # Only save if extraction was successful (not an error message)
+        if extracted_text and not extracted_text.startswith("[Error") and not extracted_text.startswith("[Unsupported"):
+            asset.extracted_text = extracted_text
+            asset.save()
+        else:
+            # Extraction failed - don't save error message as extracted_text
+            print(f"Error extracting text from pillar asset: {extracted_text}")
+            extracted_text = None
+    except Exception as e:
+        print(f"Error extracting text from pillar asset: {e}")
+        import traceback
+        traceback.print_exc()
+        # Continue even if extraction fails
+        extracted_text = None
+    
+    # Generate automatic AI response about the uploaded material
+    ai_response_content = None
+    if extracted_text:
+        try:
+            # Build context for AI response
+            global_summary = build_global_summary(pillar.book, exclude_pillar=pillar)
+            
+            # Get conversation history to make the response contextual
+            messages_history = list(PillarChatMessage.objects.filter(pillar=pillar).order_by("created_at"))
+            
+            # Get a preview of the extracted text (first 800 chars for better context)
+            text_preview = extracted_text[:800] if len(extracted_text) > 800 else extracted_text
+            text_length = len(extracted_text)
+            
+            # Build prompt for AI to acknowledge the material
+            acknowledgment_prompt = f"""The user has just uploaded a file: "{filename}" ({file_ext.upper()}).
+
+The file has been processed and I've extracted {text_length} characters of text.
+
+Here's a preview of the content:
+{text_preview}
+{"[... content continues ...]" if len(extracted_text) > 800 else ""}
+
+I now have access to this material and can use it as context when asking questions about the {pillar.name} pillar.
+
+Generate a brief, friendly acknowledgment message (2-3 sentences) that:
+1. Confirms you've received and processed the file
+2. Mentions something specific you noticed in the content (if substantial and relevant)
+3. Indicates you'll use this information in the conversation
+4. Asks a relevant follow-up question or invites them to continue based on what you learned
+
+Be conversational and natural, as if you're responding to them sharing the material. Reference specific details from the content if they're relevant to the pillar."""
+            
+            # Get system prompt for this pillar
+            system_prompt = get_pillar_system_prompt(pillar.slug, global_summary, pillar.status, pillar)
+            
+            # Build messages for OpenAI (include conversation history for context)
+            openai_messages = [
+                {"role": "system", "content": system_prompt}
+            ]
+            
+            # Add conversation history if it exists
+            if messages_history:
+                for msg in messages_history:
+                    openai_messages.append({"role": msg.role, "content": msg.content})
+            
+            # Add the acknowledgment prompt
+            openai_messages.append({"role": "user", "content": acknowledgment_prompt})
+            
+            # Generate AI response
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            completion = client.chat.completions.create(
+                model="gpt-4o",
+                messages=openai_messages,
+                temperature=0.7,
+                max_tokens=300,
+            )
+            
+            ai_response_content = completion.choices[0].message.content.strip()
+            
+            # Save the AI response as a message
+            PillarChatMessage.objects.create(
+                pillar=pillar,
+                role="assistant",
+                content=ai_response_content,
+                state_emission=None
+            )
+            
+            # Recalculate depth score after uploading materials
+            # The uploaded materials provide additional context that should be evaluated
+            all_messages = list(PillarChatMessage.objects.filter(pillar=pillar).order_by("created_at"))
+            depth_score, eval_complete, reason = evaluate_pillar_depth(pillar, all_messages)
+            
+            was_complete = pillar.status == "COMPLETE"
+            previous_depth_score = pillar.depth_score
+            
+            # If pillar was already complete, preserve the higher depth score
+            if was_complete:
+                depth_score = max(depth_score, previous_depth_score)
+            
+            # Update pillar depth score
+            pillar.depth_score = depth_score
+            
+            # Check if pillar should be marked complete based on new depth
+            if not was_complete and eval_complete and depth_score >= 85:
+                pillar.status = "COMPLETE"
+                pillar.summary = generate_pillar_summary(pillar)
+                
+                # If this is the emotional_resonance pillar, infer and set the audience_tag
+                if pillar.slug == "emotional_resonance":
+                    audience_tag = infer_audience_tag_from_pillars(pillar.book)
+                    if audience_tag:
+                        pillar.book.audience_tag = audience_tag
+                        pillar.book.save()
+                        print(f"Set audience_tag for book {pillar.book.id}: {audience_tag}")
+                
+                # Invalidate positioning brief if it exists
+                try:
+                    PositioningBrief.objects.filter(book=pillar.book).delete()
+                except:
+                    pass
+            elif was_complete:
+                # If already complete, regenerate summary with new information
+                pillar.summary = generate_pillar_summary(pillar)
+                # Invalidate positioning brief if it exists
+                try:
+                    PositioningBrief.objects.filter(book=pillar.book).delete()
+                except:
+                    pass
+            
+            pillar.save()
+            
+        except Exception as e:
+            print(f"Error generating AI acknowledgment for uploaded file: {e}")
+            # Continue even if AI response generation fails
+    
+    return Response(
+        {
+            "asset": {
+                "id": asset.id,
+                "filename": asset.filename,
+                "file_type": asset.file_type,
+                "created_at": asset.created_at.isoformat(),
+            },
+            "ai_response": ai_response_content,  # Include AI response in the response
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_pillar_assets(request, pillar_id: int):
+    """List all assets for a pillar."""
+    try:
+        pillar = PositioningPillar.objects.select_related("book").get(pk=pillar_id)
+        if pillar.book.user != request.user:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    except PositioningPillar.DoesNotExist:
+        return Response({"detail": "Pillar not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    assets = PillarAsset.objects.filter(pillar=pillar).order_by("-created_at")
+    
+    return Response(
+        {
+            "assets": [
+                {
+                    "id": asset.id,
+                    "filename": asset.filename,
+                    "file_type": asset.file_type,
+                    "created_at": asset.created_at.isoformat(),
+                }
+                for asset in assets
+            ]
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def review_chapter(request, chapter_id: int):
+    """
+    Review a chapter talking point by talking point with full context.
+    Creates AI review comments for each issue found.
+    """
+    try:
+        chapter = Chapter.objects.select_related("book").prefetch_related(
+            "sections__talking_points"
+        ).get(pk=chapter_id)
+        book = chapter.book
+        
+        # Check access
+        if not user_has_book_access(request.user, book):
+            return Response(
+                {"detail": "You don't have access to this book"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    except Chapter.DoesNotExist:
+        return Response(
+            {"detail": "Chapter not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    
+    # Gather all context
+    # 1. Chapter text - collect all talking point content with IDs for mapping
+    chapter_text_parts = []
+    talking_points_list = []
+    for section in chapter.sections.all().order_by("order"):
+        for tp in section.talking_points.all().order_by("order"):
+            if tp.content:
+                chapter_text_parts.append(f"[TALKING_POINT_ID: {tp.id} | Section: {section.title} | Topic: {tp.text}]\n{tp.content}")
+                talking_points_list.append({
+                    "id": tp.id,
+                    "section_title": section.title,
+                    "talking_point_text": tp.text,
+                    "content": tp.content,
+                })
+    
+    chapter_text = "\n\n".join(chapter_text_parts)
+    
+    # Create talking point ID mapping for the AI
+    if not talking_points_list:
+        return Response(
+            {"detail": "No talking points with content found in this chapter"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    tp_id_mapping = "\n".join([f"  - ID {tp['id']}: {tp['section_title']} - {tp['talking_point_text']}" for tp in talking_points_list])
+    
+    # 2. Chapter outline - intent + key points
+    chapter_outline = f"Chapter: {chapter.title}\n"
+    for section in chapter.sections.all().order_by("order"):
+        chapter_outline += f"\nSection: {section.title}\n"
+        for tp in section.talking_points.all().order_by("order"):
+            chapter_outline += f"  - {tp.text}\n"
+    
+    # 3. Book context
+    book_context_parts = []
+    if book.audience:
+        book_context_parts.append(f"Audience: {book.audience}")
+    if book.core_topic:
+        book_context_parts.append(f"Core Topic: {book.core_topic}")
+    
+    # Get positioning brief if available
+    try:
+        brief = PositioningBrief.objects.get(book=book)
+        if brief.brief_text:
+            book_context_parts.append(f"Positioning Brief:\n{brief.brief_text}")
+    except PositioningBrief.DoesNotExist:
+        pass
+    
+    book_context = "\n\n".join(book_context_parts) if book_context_parts else "No book context available."
+    
+    # 4. Tone of voice profile (audience tag)
+    tone_of_voice = "Not specified"
+    if book.audience_tag:
+        tag = book.audience_tag
+        primary = tag.get("primary", "")
+        secondary = tag.get("secondary")
+        if primary:
+            tone_map = {
+                "RED": "Stimulation, challenge, novelty - energetic and bold",
+                "YELLOW": "Belonging, joy, connection - warm and inclusive",
+                "BLUE": "Mastery, control, status - authoritative and clear",
+                "GREEN": "Safety, clarity, predictability - reassuring and structured",
+            }
+            tone_of_voice = tone_map.get(primary, primary)
+            if secondary:
+                tone_of_voice += f" / {tone_map.get(secondary, secondary)}"
+    
+    # 5. Glossary - get actual glossary terms from the book
+    glossary_terms = GlossaryTerm.objects.filter(book=book).order_by("term")
+    if glossary_terms.exists():
+        glossary_lines = []
+        for term in glossary_terms:
+            term_line = f"- {term.term}"
+            if term.preferred_spelling and term.preferred_spelling != term.term:
+                term_line += f" (preferred: {term.preferred_spelling})"
+            if term.do_not_change:
+                term_line += " [DO NOT CHANGE]"
+            if term.definition:
+                term_line += f": {term.definition}"
+            if term.category and term.category != "other":
+                term_line += f" ({term.get_category_display()})"
+            glossary_lines.append(term_line)
+        glossary = "\n".join(glossary_lines)
+    else:
+        glossary = "No glossary terms specified yet. If you encounter domain/brand/framework terms that may be flagged by spellcheck, suggest 'Add to glossary' in your comment."
+    
+    # 6. Chapter language and spelling convention
+    chapter_language = "English"  # Could be enhanced to detect language
+    spelling_convention = book.spelling_convention
+    if spelling_convention == "us":
+        chapter_language = "English (American/US spelling)"
+    elif spelling_convention == "uk":
+        chapter_language = "English (British/UK spelling)"
+    else:
+        chapter_language = "English (infer US/UK from existing content and stay consistent)"
+    
+    # Build the review prompt
+    review_prompt = f"""You are a top publishing-house editor and sharp business book coach. Review this chapter talking point by talking point.
+
+CONTEXT PROVIDED:
+===============
+
+CHAPTER TEXT (current chapter content):
+{chapter_text}
+
+TALKING POINT ID MAPPING (use these IDs in your review_items):
+{tp_id_mapping}
+
+CHAPTER OUTLINE (intent + key points):
+{chapter_outline}
+
+BOOK CONTEXT:
+{book_context}
+
+TONE OF VOICE PROFILE:
+{tone_of_voice}
+
+GLOSSARY:
+{glossary}
+
+CHAPTER LANGUAGE:
+{chapter_language}
+
+REVIEW INSTRUCTIONS:
+===================
+
+Review each talking point in the chapter. For each issue found, provide:
+
+1. CATEGORY: One of [Clarity, Flow, Argument, Proof, Consistency, Tone, Relevance, Source, Glossary, Structure]
+2. ANCHOR: Quote 1-2 sentences from the chapter to locate the exact spot
+3. SUGGESTED CHANGE ({chapter_language}): Exact replacement/insert/delete text (keep it small; <= paragraph)
+4. COMMENT (English): Why this matters + what to do next (coach tone: collaborative, concrete)
+5. OPTIONS (optional): Option A / Option B (content-level only, not for mere wordings)
+6. GLOSSARY SUGGESTION (optional): term + preferred spelling + short meaning + "do-not-change" if relevant
+
+OPTIMIZE FOR:
+- Clarity & meaning (remove ambiguity, tighten reasoning)
+- Flow & readability (structure, transitions, pacing, scannability)
+- Argumentation & consistency (no contradictions, no logical jumps)
+- Tone of voice (professional book voice; keep author's personality)
+- Proofreading (spelling, grammar, punctuation; US/UK English consistency)
+- Credibility (quotes, attributions, stats, "research says" claims must be supported or softened)
+
+EDITING CONSTRAINTS (CRITICAL):
+- Do not rewrite the whole chapter
+- Make small, local improvements (typically up to one paragraph per change)
+- Keep the author's voice, but professionalize spoken-language drafts into publishable prose
+- Produce max 50 total review items per run
+- Choose highest-impact items first
+- Provide one suggestion per same piece of text - if multiple issues exist for one piece of text, combine them and show multiple categories as the tag and only provide one solution
+
+NEVER fabricate sources: no invented links, DOIs, titles, authors, publishers, years, or "studies show..." claims.
+
+You may:
+- Flag where support is needed
+- Suggest source types (e.g., official statistics agency, peer-reviewed meta-analysis, industry benchmark report)
+- Provide search queries the product can use to find candidates
+- If you suspect a quote/attribution is wrong, flag it cautiously and request verification
+
+Do not flag domain/brand/framework terms as spelling errors if they are likely intentional.
+If a term is repeated and may be flagged by generic spellcheck, add a comment suggesting: "Add to glossary".
+
+If English chapter: enforce consistent US vs UK spelling. If unclear, infer from existing usage; otherwise propose one choice once and stick to it.
+
+When a reader might think "So what?" or "Why should I care?", flag it as a relevance gap and propose a concrete fix.
+
+Return your review as a JSON object with a "review_items" array. Each item should have:
+{{
+  "review_items": [
+    {{
+      "talking_point_id": <id>,
+      "category": "<category>",
+      "anchor": "<quoted text>",
+      "suggested_change": "<replacement text>",
+      "comment": "<coach comment>",
+      "options": "<optional: Option A / Option B>",
+      "glossary_suggestion": "<optional: term + spelling + meaning>"
+    }}
+  ]
+}}
+
+Return ONLY valid JSON, no other text."""
+
+    # Call OpenAI
+    try:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a top publishing-house editor and sharp business book coach. Return only valid JSON arrays."},
+                {"role": "user", "content": review_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=4000,
+            response_format={"type": "json_object"},
+        )
+        
+        result_text = completion.choices[0].message.content.strip()
+        import json
+        result = json.loads(result_text)
+        
+        # Extract review items (handle both direct array and nested structure)
+        review_items = result.get("review_items", [])
+        if not review_items and isinstance(result, list):
+            review_items = result
+        elif not review_items:
+            # Try to find any array in the result
+            for key, value in result.items():
+                if isinstance(value, list):
+                    review_items = value
+                    break
+        
+        # Normalize text for deduplication
+        def normalize_text(text):
+            if not text:
+                return ""
+            text = text.replace('"', '').replace("'", '').replace("---", "")
+            text = " ".join(text.split())
+            return text.lower()
+        
+        # Deduplicate review items
+        seen_items = set()
+        unique_items = []
+        for item in review_items[:50]:  # Limit to 50
+            anchor = normalize_text(item.get("anchor", ""))
+            suggested = normalize_text(item.get("suggested_change", ""))
+            item_key = (anchor, suggested)
+            
+            if item_key not in seen_items:
+                seen_items.add(item_key)
+                unique_items.append(item)
+
+        # Build tp lookup for section_title and talking_point_text
+        tp_lookup = {tp["id"]: tp for tp in talking_points_list}
+
+        # Return suggestions directly - no DB persistence (review runs on each chapter enter)
+        suggestions = []
+        for item in unique_items:
+            tp_id = item.get("talking_point_id")
+            if not tp_id:
+                continue
+            tp_info = tp_lookup.get(tp_id, {})
+            suggestions.append({
+                "talking_point_id": tp_id,
+                "talking_point_text": tp_info.get("talking_point_text", ""),
+                "section_title": tp_info.get("section_title", ""),
+                "category": item.get("category", "Review"),
+                "anchor": item.get("anchor", ""),
+                "suggested_change": item.get("suggested_change", ""),
+                "comment": item.get("comment", ""),
+                "options": item.get("options", ""),
+                "glossary_suggestion": item.get("glossary_suggestion", ""),
+            })
+
+        return Response({
+            "success": True,
+            "review_items_found": len(unique_items),
+            "suggestions": suggestions,
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as exc:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"REVIEW CHAPTER ERROR: {exc}")
+        print(f"TRACEBACK: {error_trace}")
+        return Response(
+            {"detail": str(exc), "traceback": error_trace if settings.DEBUG else None},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_chapter_comments(request, chapter_id: int):
+    """
+    Get all comments for all talking points in a chapter.
+    Returns comments with talking point and section context.
+    """
+    try:
+        chapter = Chapter.objects.select_related("book").prefetch_related(
+            "sections__talking_points__comments"
+        ).get(pk=chapter_id)
+        book = chapter.book
+        
+        # Check access
+        if not user_has_book_access(request.user, book):
+            return Response(
+                {"detail": "You don't have access to this book"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    except Chapter.DoesNotExist:
+        return Response(
+            {"detail": "Chapter not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    
+    # Collect all comments for all talking points in this chapter
+    all_comments = []
+    for section in chapter.sections.all().order_by("order"):
+        for tp in section.talking_points.all().order_by("order"):
+            comments = Comment.objects.filter(talking_point=tp).select_related("user").order_by("-created_at")
+            for comment in comments:
+                comment_data = CommentSerializer(comment).data
+                comment_data["talking_point_id"] = tp.id
+                comment_data["talking_point_text"] = tp.text
+                comment_data["section_title"] = section.title
+                all_comments.append(comment_data)
+    
+    return Response(all_comments, status=status.HTTP_200_OK)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def delete_pillar_asset(request, asset_id: int):
+    """Delete a pillar asset."""
+    try:
+        asset = PillarAsset.objects.select_related("pillar__book").get(pk=asset_id)
+        
+        # Check if user owns the book
+        if asset.pillar.book.user != request.user:
+            return Response(
+                {"detail": "You do not have permission to delete this asset"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        
+        # Delete the file from storage
+        if asset.file:
+            asset.file.delete()
+        
+        # Delete the asset record
+        asset.delete()
+        
+        return Response(
+            {"detail": "Asset deleted successfully"},
+            status=status.HTTP_200_OK,
+        )
+        
+    except PillarAsset.DoesNotExist:
+        return Response(
+            {"detail": "Asset not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    except Exception as exc:
+        return Response(
+            {"detail": str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+# ============================================
+# GLOSSARY ENDPOINTS
+# ============================================
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def glossary_list_create(request, book_id: int):
+    """
+    GET: List all glossary terms for a book.
+    POST: Create a new glossary term.
+    """
+    try:
+        book = Book.objects.get(pk=book_id)
+        
+        # Check access
+        if not user_has_book_access(request.user, book):
+            return Response(
+                {"detail": "You don't have access to this book"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    except Book.DoesNotExist:
+        return Response(
+            {"detail": "Book not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    
+    if request.method == "GET":
+        terms = GlossaryTerm.objects.filter(book=book).order_by("term")
+        serializer = GlossaryTermSerializer(terms, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    elif request.method == "POST":
+        # Only book owner can add glossary terms
+        if book.user != request.user:
+            return Response(
+                {"detail": "Only the book owner can add glossary terms"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        
+        data = request.data.copy()
+        data["book"] = book.id
+        
+        serializer = GlossaryTermSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["GET", "PUT", "DELETE"])
+@permission_classes([IsAuthenticated])
+def glossary_detail(request, term_id: int):
+    """
+    GET: Get a single glossary term.
+    PUT: Update a glossary term.
+    DELETE: Delete a glossary term.
+    """
+    try:
+        term = GlossaryTerm.objects.select_related("book").get(pk=term_id)
+        
+        # Check access
+        if not user_has_book_access(request.user, term.book):
+            return Response(
+                {"detail": "You don't have access to this book"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    except GlossaryTerm.DoesNotExist:
+        return Response(
+            {"detail": "Glossary term not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    
+    if request.method == "GET":
+        serializer = GlossaryTermSerializer(term)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    elif request.method == "PUT":
+        # Only book owner can update glossary terms
+        if term.book.user != request.user:
+            return Response(
+                {"detail": "Only the book owner can update glossary terms"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        
+        serializer = GlossaryTermSerializer(term, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    elif request.method == "DELETE":
+        # Only book owner can delete glossary terms
+        if term.book.user != request.user:
+            return Response(
+                {"detail": "Only the book owner can delete glossary terms"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        
+        term.delete()
+        return Response({"detail": "Glossary term deleted"}, status=status.HTTP_200_OK)
+
+
+@api_view(["PUT"])
+@permission_classes([IsAuthenticated])
+def update_spelling_convention(request, book_id: int):
+    """Update the spelling convention (US/UK/auto) for a book."""
+    try:
+        book = Book.objects.get(pk=book_id)
+        
+        # Only book owner can update spelling convention
+        if book.user != request.user:
+            return Response(
+                {"detail": "Only the book owner can update spelling settings"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    except Book.DoesNotExist:
+        return Response(
+            {"detail": "Book not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    
+    convention = request.data.get("spelling_convention")
+    if convention not in ["us", "uk", "auto"]:
+        return Response(
+            {"detail": "Invalid spelling convention. Must be 'us', 'uk', or 'auto'."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    
+    book.spelling_convention = convention
+    book.save()
+    
+    return Response({
+        "spelling_convention": book.spelling_convention,
+        "message": f"Spelling convention updated to {book.get_spelling_convention_display()}"
     }, status=status.HTTP_200_OK)
 

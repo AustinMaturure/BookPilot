@@ -46,6 +46,7 @@
     COPY . .
     
     RUN mkdir -p /app/chapter_assets /app/staticfiles /app/media \
+     && chmod +x /app/scripts/start.sh \
      && useradd -m -u 1000 django \
      && chown -R django:django /app
     
@@ -53,8 +54,9 @@
     
     EXPOSE 8000
     
-    HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    # Increase start-period: migrations + DB retries can take up to 90s
+    HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
         CMD curl -f http://localhost:8000/admin/ || exit 1
     
-    CMD ["sh", "-c", "python manage.py migrate --noinput && gunicorn base.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120"]
+    CMD ["/app/scripts/start.sh"]
     
