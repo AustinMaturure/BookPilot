@@ -27,9 +27,9 @@ const typeStyles: Record<NotificationType, { bg: string; border: string; icon: s
     icon: "text-blue-600",
   },
   success: {
-    bg: "bg-green-50",
-    border: "border-green-200",
-    icon: "text-green-600",
+    bg: "bg-[#CDF056]",
+    border: "border-[#CDF056]",
+    icon: "text-[#011b2d]",
   },
   warning: {
     bg: "bg-amber-50",

@@ -1846,18 +1846,47 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     if (outline && outline.chapters && outline.chapters.length > 0) {
       // Only auto-select first section if no section is currently selected
       if (!selectedItem) {
-        const firstChapter = outline.chapters[0];
-        if (firstChapter?.id && firstChapter.sections && firstChapter.sections.length > 0) {
-          setExpandedChapters({ [firstChapter.id]: true });
-          const firstSection = firstChapter.sections[0];
-          if (firstSection?.id) {
-            setSelectedItem({
-              type: "section",
-              chapterId: firstChapter.id,
-              sectionId: firstSection.id,
-              sectionTitle: firstSection.title,
-            });
-            // Content is sourced from canonical data; editor owns live state after mount
+        // Try to restore from localStorage (persist across refresh)
+        let restored = false;
+        if (bookId && typeof localStorage !== "undefined") {
+          try {
+            const stored = localStorage.getItem(`bookPilot:editor:${bookId}`);
+            if (stored) {
+              const parsed = JSON.parse(stored) as { chapterId?: number; sectionId?: number; talkingPointId?: number };
+              if (parsed.chapterId != null && parsed.sectionId != null) {
+                const chId = parsed.chapterId;
+                const secId = parsed.sectionId;
+                const chapter = outline.chapters?.find((ch) => ch.id === chId);
+                const section = chapter?.sections?.find((sec) => sec.id === secId);
+                if (chapter && section) {
+                  setExpandedChapters((prev) => ({ ...prev, [chId]: true }));
+                  setSelectedItem({
+                    type: "section",
+                    chapterId: chId,
+                    sectionId: secId,
+                    sectionTitle: section.title,
+                  });
+                  const validTp = parsed.talkingPointId != null && section.talking_points?.some((tp) => tp.id === parsed.talkingPointId);
+                  setCurrentTalkingPointId(validTp ? parsed.talkingPointId! : null);
+                  restored = true;
+                }
+              }
+            }
+          } catch (_) {}
+        }
+        if (!restored) {
+          const firstChapter = outline.chapters[0];
+          if (firstChapter?.id && firstChapter.sections && firstChapter.sections.length > 0) {
+            setExpandedChapters({ [firstChapter.id]: true });
+            const firstSection = firstChapter.sections[0];
+            if (firstSection?.id) {
+              setSelectedItem({
+                type: "section",
+                chapterId: firstChapter.id,
+                sectionId: firstSection.id,
+                sectionTitle: firstSection.title,
+              });
+            }
           }
         }
       } else {
@@ -1882,7 +1911,19 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outline]);
+  }, [outline, bookId]);
+
+  // Persist chapter/section/talking point to localStorage so we restore on refresh
+  useEffect(() => {
+    if (bookId && selectedItem && typeof localStorage !== "undefined") {
+      const payload = {
+        chapterId: selectedItem.chapterId,
+        sectionId: selectedItem.sectionId,
+        talkingPointId: currentTalkingPointId ?? undefined,
+      };
+      localStorage.setItem(`bookPilot:editor:${bookId}`, JSON.stringify(payload));
+    }
+  }, [bookId, selectedItem, currentTalkingPointId]);
 
   // Handle URL parameters for navigation from checks
   useEffect(() => {
@@ -2762,7 +2803,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
    * handleCreateEditSuggest - Collaborator select-text flow: build replace step from modal and submit
    */
   const handleCreateEditSuggest = async () => {
-    if (!createEditTpId || createEditFrom < 0 || createEditTo <= createEditFrom) return;
+    // Allow from=0, to=0 for insertion into empty talking point
+    if (!createEditTpId || createEditFrom < 0 || createEditTo < createEditFrom) return;
     const editor = createEditEditorRef.current;
     if (!editor) return;
     setIsSubmittingCreateEdit(true);
@@ -2770,19 +2812,29 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       const html = editor.getHTML();
       let sliceJson: { content: any[]; openStart: number; openEnd: number };
       const plainText = htmlToPlainTextForMatching(html).trim();
+      const isInsertIntoEmpty = createEditFrom === 0 && createEditTo === 0;
       if (plainText) {
         try {
           const dom = document.createElement("div");
           dom.innerHTML = html;
           const slice = PMDOMParser.fromSchema(editor.schema).parseSlice(dom);
           sliceJson = slice.toJSON();
-          // Use open slice (openStart=1, openEnd=1) so the content can merge when replacing
-          // within a block (e.g. a word in a paragraph). Without this, we get "Inserted content
-          // deeper than insertion position" because a closed slice assumes block-level insertion.
-          sliceJson.openStart = 1;
-          sliceJson.openEnd = 1;
+          if (isInsertIntoEmpty) {
+            // Insert at position 0 into empty doc: use closed slice (block-level)
+            // Open slice would cause "Inserted content deeper than insertion position"
+            sliceJson.openStart = 0;
+            sliceJson.openEnd = 0;
+          } else {
+            // Replacing within a block: use open slice so content merges (e.g. word replacement)
+            sliceJson.openStart = 1;
+            sliceJson.openEnd = 1;
+          }
         } catch {
-          sliceJson = { content: [{ type: "paragraph", content: [{ type: "text", text: plainText }] }], openStart: 1, openEnd: 1 };
+          sliceJson = {
+            content: [{ type: "paragraph", content: [{ type: "text", text: plainText }] }],
+            openStart: isInsertIntoEmpty ? 0 : 1,
+            openEnd: isInsertIntoEmpty ? 0 : 1,
+          };
         }
       } else {
         sliceJson = { content: [], openStart: 0, openEnd: 0 };
@@ -4185,6 +4237,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             )}
                           </div>
                           <div className="flex items-center gap-2">
+                       
                             <button
                               onClick={(event) => {
                                 event.stopPropagation();
@@ -4203,6 +4256,28 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               </svg>
                               <span>Assets</span>
                             </button>
+                                 {/* Insert text - collaborators only, when talking point body is empty */}
+                                 {!isBookOwner && collaboratorRole === "editor" && (!tp.content || String(tp.content).replace(/<[^>]*>/g, "").trim() === "") && (
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setCreateEditInitialContent("<p></p>");
+                                  setCreateEditOriginalText("");
+                                  setCreateEditFrom(0);
+                                  setCreateEditTo(0);
+                                  setCreateEditTpId(tpId);
+                                  setCreateEditModalOpen(true);
+                                  setCurrentTalkingPointId(tpId);
+                                }}
+                                className="px-3 py-1.5 text-sm rounded-lg flex items-center gap-2 bg-[#CDF056] text-black hover:bg-[#CDF056]/70"
+                                title="Suggest initial content for this talking point"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                </svg>
+                                Insert text
+                              </button>
+                            )}
                             <button
                               onClick={(event) => {
                                 event.stopPropagation();
@@ -4673,11 +4748,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     console.log("Collaborator view - relevant changes:", relevantChanges.length, "changes:", relevantChanges.map(c => ({ id: c.id, tp: c.talking_point, status: c.status })));
                   }
 
-                  // Sort by created_at descending (newest first)
+                  // Owners: older first (approve in order). Collaborators: newest first
                   relevantChanges = [...relevantChanges].sort((a, b) => {
                     const dateA = new Date(a.created_at).getTime();
                     const dateB = new Date(b.created_at).getTime();
-                    return dateB - dateA; // Newest first
+                    return isBookOwner ? dateA - dateB : dateB - dateA;
                   });
 
                   if (relevantChanges.length === 0) {
@@ -4694,6 +4769,14 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     const oldestPendingId = isBookOwner ? getOldestPendingChangeId(change.talking_point) : null;
                     const isOldestPending =
                       !isBookOwner || change.status !== "pending" || change.id === oldestPendingId;
+                    const changeSectionTitle = (() => {
+                      for (const ch of outline?.chapters || []) {
+                        for (const sec of ch.sections || []) {
+                          if (sec.talking_points?.some((tp) => tp.id === change.talking_point)) return sec.title;
+                        }
+                      }
+                      return null;
+                    })();
                     return (
                       <div
                         key={change.id}
@@ -4710,9 +4793,58 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                         <div className="flex items-start justify-between mb-2">
                           <div className="flex-1">
                             <div className="flex items-center justify-between">
-
-                            
-                            <div className="text-white text-xs font-semibold mb-1">{change.user_name}</div>
+                            <div className="flex justify-between items-center w-full">
+                              <div className="text-white text-xs font-semibold mb-2">{change.user_name}</div>
+                              {isOldestPending && isBookOwner && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  let targetChapterId: number | null = null;
+                                  let targetSectionId: number | null = null;
+                                  let targetSectionTitle: string | null = null;
+                                  if (outline?.chapters) {
+                                    for (const chapter of outline.chapters) {
+                                      for (const section of chapter.sections || []) {
+                                        if (section.talking_points?.some((tp) => tp.id === change.talking_point)) {
+                                          targetChapterId = chapter.id ?? null;
+                                          targetSectionId = section.id ?? null;
+                                          targetSectionTitle = section.title ?? null;
+                                          break;
+                                        }
+                                      }
+                                      if (targetSectionId) break;
+                                    }
+                                  }
+                                  if (targetChapterId && targetSectionId && targetSectionTitle && selectedItem?.sectionId !== targetSectionId) {
+                                    handleSectionClick(targetChapterId, targetSectionId, targetSectionTitle);
+                                  }
+                                  setCurrentTalkingPointId(change.talking_point);
+                                  if (isBookOwner) setFocusedChangeTpId(change.talking_point);
+                                  setHighlightPreviewMode("collaborators");
+                                  highlightChangeInEditor(change);
+                                  setTimeout(() => {
+                                    const tpElement = document.querySelector(`[data-tp-id="${change.talking_point}"]`);
+                                    if (tpElement) {
+                                      tpElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                                      const parent = tpElement.parentElement?.parentElement;
+                                      if (parent) {
+                                        parent.classList.add("ring-2", "ring-[#CDF056]", "ring-opacity-50");
+                                        setTimeout(() => parent.classList.remove("ring-2", "ring-[#CDF056]", "ring-opacity-50"), 2000);
+                                      }
+                                    }
+                                    setDecorationRefreshTrigger((t) => t + 1);
+                                  }, 300);
+                                }}
+                                className="text-xs text-[#CDF056] hover:text-[#CDF056]/80 flex items-center gap-1 hover:underline"
+                                title="Go to talking point"
+                              >
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                                </svg>
+                                Go to
+                              </button>
+                              )}
+                            </div>
                             <div>{!isBookOwner && change.status === "pending" && change.user === currentUserId && (
                           <button
                             onClick={async () => {
@@ -4728,6 +4860,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             X
                           </button>
                         )}</div></div>
+                            {changeSectionTitle && (
+                              <div className="text-gray-500 text-xs mb-1">{changeSectionTitle}</div>
+                            )}
                             <div className="text-gray-400 text-xs">
                               {new Date(change.created_at).toLocaleDateString()} {new Date(change.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </div>
@@ -4880,7 +5015,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               disabled={!isOldestPending}
                               className={`flex-1 px-3 py-1.5 rounded text-sm ${!isOldestPending
                                 ? "bg-gray-500 text-gray-300 cursor-not-allowed"
-                                : "bg-[#CDF056] text-white hover:bg-[#CDF056]/70"
+                                : "bg-[#CDF056] text-[#011b2d] hover:bg-[#CDF056]/70"
                                 }`}
                               title={!isOldestPending ? "Approve earlier changes first" : "Approve"}
                             >
@@ -6100,7 +6235,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           disabled={!isOldestPending}
                           className={`flex-1 px-3 py-1.5 rounded text-sm ${!isOldestPending
                             ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-                            : "bg-green-600 text-white hover:bg-green-700"
+                            : "bg-[#CDF056] text-[#011b2d] hover:bg-[#CDF056]/80"
                             }`}
                           title={!isOldestPending ? "Approve earlier changes first" : "Accept this change"}
                         >
@@ -6131,26 +6266,20 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       {/* Create Edit Modal - collaborator suggests change from selected text (rich editor with formatting) */}
       {createEditModalOpen && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 "
           onClick={() => !isSubmittingCreateEdit && setCreateEditModalOpen(false)}
         >
           <div
-            className="bg-[#011b2d] border border-[#2d3a4a] rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden"
+            className="bg-[#011b2d] mt-12 border border-[#2d3a4a] rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-5 border-b border-[#2d3a4a] flex items-center justify-between shrink-0">
-              <h3 className="text-lg font-semibold text-white">Suggest Edit</h3>
-              <button
-                onClick={() => !isSubmittingCreateEdit && setCreateEditModalOpen(false)}
-                className="text-gray-400 hover:text-white p-1"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
+            
             <div className="p-5 overflow-y-auto flex-1 min-h-0">
-              <p className="text-sm text-gray-400 mb-4">Edit the text below with formatting (bold, italic, lists, etc.). Your suggestion will appear to the author with the original highlighted and your replacement shown.</p>
+              <p className="text-sm text-gray-400 mb-4">
+                {createEditFrom === 0 && createEditTo === 0
+                  ? "Add your suggested content below with formatting (bold, italic, lists, etc.). The author can approve or reject it."
+                  : "Edit the text below with formatting (bold, italic, lists, etc.). Your suggestion will appear to the author with the original highlighted and your replacement shown."}
+              </p>
               <CreateEditModalEditor
                 key={`${createEditTpId}-${createEditFrom}`}
                 initialContent={createEditInitialContent}
