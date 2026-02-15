@@ -151,7 +151,10 @@ export default function BookDetail() {
   if (loading) {
     return (
       <div className="min-h-screen bg-[#0a1a2e] flex items-center justify-center">
-        <div className="text-gray-400">Loading...</div>
+        <div className="flex flex-col items-center gap-4">
+          <div className="animate-spin rounded-full h-12 w-12 border-2 border-[#2d3a4a] border-t-[#CDF056]"></div>
+          <p className="text-gray-400">Loading...</p>
+        </div>
       </div>
     );
   }

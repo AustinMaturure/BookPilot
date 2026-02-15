@@ -1963,7 +1963,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   };
 
   const handleChapterTitleSave = async () => {
-    if (editingChapterId == null || !bookId || !onOutlineUpdate) return;
+    if (editingChapterId == null || !bookId || !onOutlineUpdate || !outline) return;
     if (Date.now() - chapterTitleEditStartedAtRef.current < 200) return;
     const trimmed = editingChapterTitleValue.replace(/\s+/g, ' ').trim();
     if (!trimmed) {
@@ -1971,14 +1971,24 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       return;
     }
     const chapterIdToUpdate = editingChapterId;
-    const res = await updateChapter(chapterIdToUpdate, { title: trimmed });
-    if (res.success) {
-      const updatedBook = await fetchBook(bookId);
-      if (updatedBook.success) onOutlineUpdate(updatedBook.data);
-      setEditingChapterId(null);
-    } else {
-      setEditingChapterId(null);
-      notification.error(res.error || "Failed to update chapter title");
+    const previousOutline = outline;
+    const optimisticOutline = {
+      ...outline,
+      chapters: outline.chapters?.map((ch: any) =>
+        ch.id === chapterIdToUpdate ? { ...ch, title: trimmed } : ch
+      ) || [],
+    };
+    setEditingChapterId(null);
+    onOutlineUpdate(optimisticOutline);
+    try {
+      const res = await updateChapter(chapterIdToUpdate, { title: trimmed });
+      if (!res.success) {
+        onOutlineUpdate(previousOutline);
+        notification.error(res.error || "Failed to update chapter title");
+      }
+    } catch {
+      onOutlineUpdate(previousOutline);
+      notification.error("Failed to update chapter title");
     }
   };
 
@@ -1989,8 +1999,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   };
 
   const handleSectionTitleSave = async () => {
-    if (editingSectionId == null || !bookId || !onOutlineUpdate) return;
-    // Skip save if blur happened too quickly (e.g. React Strict Mode unmount/remount)
+    if (editingSectionId == null || !bookId || !onOutlineUpdate || !outline) return;
     if (Date.now() - sectionTitleEditStartedAtRef.current < 200) return;
     const trimmed = editingSectionTitleValue.trim();
     if (!trimmed) {
@@ -1998,19 +2007,39 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       return;
     }
     const sectionIdToUpdate = editingSectionId;
-    const res = await updateSection(sectionIdToUpdate, { title: trimmed });
-    if (res.success) {
-      const updatedBook = await fetchBook(bookId);
-      if (updatedBook.success) {
-        onOutlineUpdate(updatedBook.data);
+    const previousOutline = outline;
+    const previousSectionTitle = outline.chapters
+      ?.flatMap((ch: any) => ch.sections || [])
+      .find((sec: any) => sec.id === sectionIdToUpdate)?.title || "";
+    const optimisticOutline = {
+      ...outline,
+      chapters: outline.chapters?.map((ch: any) => ({
+        ...ch,
+        sections: (ch.sections || []).map((sec: any) =>
+          sec.id === sectionIdToUpdate ? { ...sec, title: trimmed } : sec
+        ),
+      })) || [],
+    };
+    setEditingSectionId(null);
+    if (selectedItem?.sectionId === sectionIdToUpdate) {
+      setSelectedItem((prev) => prev ? { ...prev, sectionTitle: trimmed } : prev);
+    }
+    onOutlineUpdate(optimisticOutline);
+    try {
+      const res = await updateSection(sectionIdToUpdate, { title: trimmed });
+      if (!res.success) {
+        onOutlineUpdate(previousOutline);
         if (selectedItem?.sectionId === sectionIdToUpdate) {
-          setSelectedItem((prev) => prev ? { ...prev, sectionTitle: trimmed } : prev);
+          setSelectedItem((prev) => prev ? { ...prev, sectionTitle: previousSectionTitle } : prev);
         }
+        notification.error(res.error || "Failed to update section title");
       }
-      setEditingSectionId(null);
-    } else {
-      setEditingSectionId(null);
-      notification.error(res.error || "Failed to update section title");
+    } catch {
+      onOutlineUpdate(previousOutline);
+      if (selectedItem?.sectionId === sectionIdToUpdate) {
+        setSelectedItem((prev) => prev ? { ...prev, sectionTitle: previousSectionTitle } : prev);
+      }
+      notification.error("Failed to update section title");
     }
   };
 
@@ -4229,7 +4258,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               {/* Scrollable Comments List */}
               <div className="flex-1 overflow-y-auto p-4">
                 {isLoadingComments ? (
-                  <div className="text-center text-gray-400 text-sm py-4">Loading comments...</div>
+                  <div className="flex flex-col items-center justify-center py-6 gap-3">
+                    <div className="animate-spin rounded-full h-8 w-8 border-2 border-[#2d3a4a] border-t-[#CDF056]"></div>
+                    <p className="text-gray-400 text-sm">Loading comments...</p>
+                  </div>
                 ) : (() => {
                   // Filter out AI comments - they should only appear in the Review tab
                   const userComments = comments.filter(comment => comment.comment_type !== "ai");
@@ -4286,7 +4318,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               {/* Changes List */}
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
                 {isLoadingChanges ? (
-                  <div className="text-center text-gray-400 text-sm py-4">Loading changes...</div>
+                  <div className="flex flex-col items-center justify-center py-6 gap-3">
+                    <div className="animate-spin rounded-full h-8 w-8 border-2 border-[#2d3a4a] border-t-[#CDF056]"></div>
+                    <p className="text-gray-400 text-sm">Loading changes...</p>
+                  </div>
                 ) : (() => {
                   // For owners: Show ALL pending changes in the section
                   // For collaborators: Show changes for the current talking point only

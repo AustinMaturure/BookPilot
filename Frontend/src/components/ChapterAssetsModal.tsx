@@ -251,7 +251,10 @@ export default function ChapterAssetsModal({
           </div>
         )}
         {loading ? (
-          <div className="text-gray-400 text-center py-8">Loading...</div>
+          <div className="flex flex-col items-center justify-center py-12 gap-4">
+            <div className="animate-spin rounded-full h-10 w-10 border-2 border-[#2d3a4a] border-t-[#CDF056]"></div>
+            <p className="text-gray-400 text-sm">Loading...</p>
+          </div>
         ) : assets.length === 0 ? (
           <div className="text-gray-400 text-center py-8">No files uploaded yet</div>
         ) : (

@@ -1,5 +1,5 @@
 import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import micIcon from '../assets/mic.svg';
 import stopIcon from '../assets/stop.svg';
 
@@ -18,6 +18,7 @@ const SpeechToText = ({ onTranscript, onListeningChange, onError }: Props) => {
   } = useSpeechRecognition();
 
   const lastFinalRef = useRef('');
+  const [userRequestedStop, setUserRequestedStop] = useState(false);
 
   useEffect(() => {
     if (!finalTranscript) return;
@@ -32,8 +33,15 @@ const SpeechToText = ({ onTranscript, onListeningChange, onError }: Props) => {
   }, [finalTranscript, onTranscript]);
 
   useEffect(() => {
-    onListeningChange(listening);
-  }, [listening, onListeningChange]);
+    onListeningChange(userRequestedStop ? false : listening);
+  }, [listening, userRequestedStop, onListeningChange]);
+
+  useEffect(() => {
+    if (!listening) setUserRequestedStop(false);
+  }, [listening]);
+
+  // Optimistic display: show stopped immediately when user clicks, don't wait for API
+  const displayListening = listening && !userRequestedStop;
 
   // Web Speech API requires secure context (HTTPS) in production
   const isSecureContext = typeof window !== 'undefined' && window.isSecureContext;
@@ -42,11 +50,21 @@ const SpeechToText = ({ onTranscript, onListeningChange, onError }: Props) => {
   if (!canUseSpeech) return null;
 
   const toggleListening = async () => {
-    if (listening) {
-      // Use abortListening instead of stopListening - abort() is more reliable in production
-      // where stop() can hang waiting for the Web Speech API's onend event
-      SpeechRecognition.abortListening();
+    if (displayListening) {
+      setUserRequestedStop(true);
+      onListeningChange(false);
+      try {
+        const recognition = SpeechRecognition.getRecognition?.();
+        if (recognition?.abort) {
+          recognition.abort();
+        } else if (SpeechRecognition.abortListening) {
+          SpeechRecognition.abortListening();
+        }
+      } catch {
+        // Ignore - UI already shows stopped
+      }
     } else {
+      setUserRequestedStop(false);
       resetTranscript();
       lastFinalRef.current = '';
       try {
@@ -64,16 +82,16 @@ const SpeechToText = ({ onTranscript, onListeningChange, onError }: Props) => {
   return (
     <button
       onClick={toggleListening}
-      title={listening ? 'Stop recording' : 'Start recording'}
+      title={displayListening ? 'Stop recording' : 'Start recording'}
       className={`shrink-0 w-12 h-12 flex items-center justify-center rounded-xl border-2 transition-all
         ${
-          listening
+          displayListening
             ? 'border-[#CDF056] bg-[#CDF056]/50 animate-pulse'
             : 'border-gray-300 bg-white hover:border-[#CDF056]'
         }`}
     >
       <img
-        src={listening ? stopIcon : micIcon}
+        src={displayListening ? stopIcon : micIcon}
         alt="Mic"
         className="w-6 h-6"
       />

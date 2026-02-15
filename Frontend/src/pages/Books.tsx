@@ -366,7 +366,10 @@ export default function Books() {
         {/* Books Grid */}
         <div className="relative rounded-lg p-8 pt-0">
           {loading ? (
-            <div className="text-center text-gray-400 py-12">Loading books...</div>
+            <div className="flex flex-col items-center justify-center py-16 gap-4">
+              <div className="animate-spin rounded-full h-12 w-12 border-2 border-[#2d3a4a] border-t-[#CDF056]"></div>
+              <p className="text-gray-400">Loading books...</p>
+            </div>
           ) : books.length === 0 ? (
             <div className="text-center text-gray-400 py-12">
               <p className="mb-4">No books yet. Create your first book to get started!</p>
