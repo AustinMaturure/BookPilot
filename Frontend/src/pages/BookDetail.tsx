@@ -55,7 +55,7 @@ export default function BookDetail() {
         const hasOutline = res.data.chapters && res.data.chapters.length > 0;
         
         if (isCollaborator) {
-          // Collaborators always open editor tab
+          // Collaborators always open editor tab (position is owner-only)
           setActiveTab("editor");
         } else if (hasOutline) {
           // Owners open editor tab only if outline exists
@@ -76,6 +76,13 @@ export default function BookDetail() {
     setHasSetInitialTab(!!tabParam);
     loadBook();
   }, [id]);
+
+  // Redirect collaborators away from Position tab (owner-only)
+  useEffect(() => {
+    if (book?.is_collaboration && book?.collaborator_role && activeTab === "position") {
+      setActiveTab("editor");
+    }
+  }, [book?.is_collaboration, book?.collaborator_role, activeTab]);
 
   const tabs: { id: Tab; label: string; icon: React.ReactElement }[] = [
     {
@@ -188,9 +195,12 @@ export default function BookDetail() {
           {/* Right: Tabs */}
           <div className="flex items-center gap-1">
             {tabs.map((tab) => {
+              const isCollaborator = book.is_collaboration && book.collaborator_role;
               const isRestrictedTab = ["overview", "position", "outline", "checks", "publish"].includes(tab.id);
               const isViewerOrCommenter = book.collaborator_role === "viewer" || book.collaborator_role === "commenter";
-              const isDisabled = isRestrictedTab && isViewerOrCommenter;
+              const isDisabled = tab.id === "position"
+                ? isCollaborator
+                : isRestrictedTab && isViewerOrCommenter;
               
               return (
                 <button

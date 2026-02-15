@@ -1,6 +1,7 @@
 import { Decoration, DecorationSet } from "prosemirror-view";
 import { Step, Mapping } from "prosemirror-transform";
 import type { Schema, Node as PMNode } from "prosemirror-model";
+import { DOMSerializer, Slice } from "prosemirror-model";
 
 type ApplyResult = {
   doc: PMNode;
@@ -115,6 +116,50 @@ export const extractSliceText = (stepAny: any): string => {
     parts.push(text);
   }
   return parts.join("");
+};
+
+const BLOCK_TAGS = /^(p|div|li|h[1-6]|blockquote|pre)$/i;
+
+/** Unwrap block elements so HTML can be rendered inline (e.g. inside a span) */
+export const htmlToInlineHtml = (html: string): string => {
+  if (!html || typeof html !== "string") return html;
+  if (typeof document === "undefined") return html.replace(/<\/?(p|div|li|h[1-6]|blockquote|pre)[^>]*>/gi, "");
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  const children = div.children;
+  if (children.length === 1 && BLOCK_TAGS.test(children[0].tagName)) {
+    return (children[0] as HTMLElement).innerHTML.trim();
+  }
+  if (children.length > 1) {
+    const parts: string[] = [];
+    for (let i = 0; i < children.length; i++) {
+      const el = children[i] as HTMLElement;
+      if (BLOCK_TAGS.test(el.tagName)) {
+        parts.push(el.innerHTML.trim());
+      } else {
+        parts.push(el.outerHTML);
+      }
+    }
+    return parts.join(" ");
+  }
+  return html;
+};
+
+/** Serialize slice content to HTML for rich display (bold, italic, etc.) - returns inline-safe HTML */
+export const sliceContentToHtml = (schema: Schema, rawStep: any): string | null => {
+  try {
+    const sliceJson = rawStep?.slice;
+    if (!sliceJson || typeof sliceJson !== "object") return null;
+    const slice = Slice.fromJSON(schema, sliceJson);
+    if (!slice.content.size) return null;
+    const div = document.createElement("div");
+    DOMSerializer.fromSchema(schema).serializeFragment(slice.content, { document }, div);
+    const html = div.innerHTML?.trim();
+    if (!html) return null;
+    return htmlToInlineHtml(html);
+  } catch {
+    return null;
+  }
 };
 
 export const parseSteps = (schema: Schema, stepJson: any[] | any): Step[] => {
@@ -537,12 +582,12 @@ export const buildDecorations = (
         finalFrom = Math.max(0, Math.min(finalFrom, docSize));
         finalTo = Math.min(docSize, Math.max(finalFrom, Math.min(finalTo, docSize)));
 
-        // Safeguard: cap unreasonably large ranges (prevents full-line/editor highlights from position bugs)
-        const maxRange = 1200; // ~paragraph; larger spans suggest wrong positions
+        // Safeguard: cap only truly unreasonable ranges (allow full-doc replace e.g. "delete all, add work")
+        const maxRange = Math.max(50000, Math.floor(docSize * 0.95));
         if (finalTo - finalFrom > maxRange) {
           const origTo = finalTo;
           finalTo = Math.min(finalFrom + maxRange, docSize);
-          console.warn(`[buildDecorations] Step ${stepIndex}: range capped from ${origTo - finalFrom} to ${finalTo - finalFrom} (full-line highlight prevention)`);
+          console.warn(`[buildDecorations] Step ${stepIndex}: range capped from ${origTo - finalFrom} to ${finalTo - finalFrom}`);
         }
 
         // Create the decoration
@@ -579,11 +624,9 @@ export const buildDecorations = (
           let insertPos = -1;
           
           if (isReplacement) {
-            // For replacement: position widget at START of change (same as deletion start)
-            // With side: 1, it will render AFTER any inline decoration spanning this position
-            // This makes it appear visually right after the strikethrough text
-            insertPos = Math.max(1, Math.min(actualFrom, docSize));
-            console.log(`[buildDecorations] Replacement: positioning insertion at ${insertPos} (deletion starts here)`);
+            // For replacement: position widget at END of deletion so suggestion appears AFTER the original text
+            insertPos = Math.max(1, Math.min(actualTo, docSize));
+            console.log(`[buildDecorations] Replacement: positioning insertion at ${insertPos} (after original)`);
           } else {
             // For pure insertions, use originalFrom or from
             if (typeof stepAny.originalFrom === "number") {

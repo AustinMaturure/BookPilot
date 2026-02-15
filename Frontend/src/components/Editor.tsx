@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "prosemirror-state";
-import { Node as PMNode, Fragment, Slice } from "prosemirror-model";
+import { Node as PMNode, Fragment, Slice, DOMSerializer, DOMParser as PMDOMParser } from "prosemirror-model";
 import { DecorationSet, Decoration } from "prosemirror-view";
 import StarterKit from "@tiptap/starter-kit";
 import Image from "@tiptap/extension-image";
@@ -14,9 +14,9 @@ import { updateTalkingPoint, updateSection, updateChapter, fetchBook, generateTe
 import ChapterAssetsModal from "./ChapterAssetsModal";
 import ChapterAssetsPanel from "./ChapterAssetsPanel";
 import { CollaborationExtension } from "./CollaborationExtension";
-import { StepCaptureExtension } from "./StepCaptureExtension";
+// StepCaptureExtension disabled for collaborators - they use Create Edit (select → Suggest Edit) only
 import { Mapping } from "prosemirror-transform";
-import { parseSteps, getPreviewFragments, findTextRangeNormalized, remapStepsToBase, extractSliceText } from "../utils/stepUtils";
+import { parseSteps, getPreviewFragments, findTextRangeNormalized, remapStepsToBase, extractSliceText, sliceContentToHtml } from "../utils/stepUtils";
 import card2 from "../assets/Branding/Card2.png"
 import "./Editor.css";
 import SpeechToText from "../utils/speech-to-text.tsx";
@@ -127,6 +127,121 @@ type SelectedItem = {
   sectionTitle: string;
 } | null;
 
+/** Create Edit modal's rich editor - only mounted when modal is open */
+const CreateEditModalEditor = ({
+  initialContent,
+  editorRef,
+  disabled,
+  onSuggest,
+  onCancel,
+  isSubmitting,
+}: {
+  initialContent: string;
+  editorRef: React.MutableRefObject<any>;
+  disabled: boolean;
+  onSuggest: () => void;
+  onCancel: () => void;
+  isSubmitting: boolean;
+}) => {
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
+      Placeholder.configure({ placeholder: "Edit the selected text…" }),
+    ],
+    content: initialContent,
+    editable: !disabled,
+    editorProps: { attributes: { class: "prose prose-sm max-w-none min-h-[200px] px-4 py-3 text-primary-900 focus:outline-none" } },
+  });
+  useEffect(() => {
+    if (editor && editorRef) editorRef.current = editor;
+    return () => {
+      if (editorRef) editorRef.current = null;
+    };
+  }, [editor, editorRef]);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-1 p-1 bg-[#0d2435] rounded-lg">
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleBold().run()}
+          className={`p-1.5 rounded ${editor?.isActive("bold") ? "bg-[#CDF056] text-[#011b2d]" : "text-gray-300 hover:bg-[#1a2a3a]"}`}
+          title="Bold"
+        >
+          <BoldIcon className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleItalic().run()}
+          className={`p-1.5 rounded ${editor?.isActive("italic") ? "bg-[#CDF056] text-[#011b2d]" : "text-gray-300 hover:bg-[#1a2a3a]"}`}
+          title="Italic"
+        >
+          <ItalicIcon className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleStrike().run()}
+          className={`p-1.5 rounded ${editor?.isActive("strike") ? "bg-[#CDF056] text-[#011b2d]" : "text-gray-300 hover:bg-[#1a2a3a]"}`}
+          title="Strikethrough"
+        >
+          <StrikethroughIcon className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleCode().run()}
+          className={`p-1.5 rounded ${editor?.isActive("code") ? "bg-[#CDF056] text-[#011b2d]" : "text-gray-300 hover:bg-[#1a2a3a]"}`}
+          title="Code"
+        >
+          <CodeBracketIcon className="w-4 h-4" />
+        </button>
+        <span className="w-px bg-[#2d3a4a] my-1" />
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleBulletList().run()}
+          className={`p-1.5 rounded ${editor?.isActive("bulletList") ? "bg-[#CDF056] text-[#011b2d]" : "text-gray-300 hover:bg-[#1a2a3a]"}`}
+          title="Bullet list"
+        >
+          <ListBulletIcon className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+          className={`p-1.5 rounded ${editor?.isActive("orderedList") ? "bg-[#CDF056] text-[#011b2d]" : "text-gray-300 hover:bg-[#1a2a3a]"}`}
+          title="Numbered list"
+        >
+          <NumberedListIcon className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => editor?.chain().focus().toggleBlockquote().run()}
+          className={`p-1.5 rounded ${editor?.isActive("blockquote") ? "bg-[#CDF056] text-[#011b2d]" : "text-gray-300 hover:bg-[#1a2a3a]"}`}
+          title="Blockquote"
+        >
+          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z"/></svg>
+        </button>
+      </div>
+      <div className="border border-[#2d3a4a] rounded-lg bg-white overflow-hidden">
+        <EditorContent editor={editor} />
+      </div>
+      <div className="flex justify-between gap-3 pt-1">
+        <button
+          onClick={onCancel}
+          disabled={isSubmitting}
+          className="px-4 py-2 text-sm text-gray-300 hover:text-white rounded-lg hover:bg-[#1a2a3a] disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onSuggest}
+          disabled={isSubmitting}
+          className="px-4 py-2 text-sm font-medium bg-[#CDF056] text-[#011b2d] rounded-lg hover:bg-[#b8e04a] disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isSubmitting ? "Submitting..." : "Suggest"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // Action Button Component
 const ActionButton = ({ icon, label, onClick, disabled }: {
   icon: React.ReactNode;
@@ -153,7 +268,7 @@ type TiptapEditorProps = {
   onUpdate: (html: string) => void;
   onBlur: () => void;
   placeholder?: string;
-  onTextSelect?: (text: string, position: { x: number; y: number }, selectionRange?: { from: number; to: number }) => void;
+  onTextSelect?: (text: string, position: { x: number; y: number }, selectionRange?: { from: number; to: number }, selectedHtml?: string) => void;
   editorRef?: React.MutableRefObject<any>;
   isCollaborator?: boolean;
   hasChanges?: boolean;
@@ -175,6 +290,7 @@ type TiptapEditorProps = {
     clientX: number;
     clientY: number;
   }) => void;
+  onTryEdit?: () => void;
 };
 
 const pendingStepPreviewKey = new PluginKey("pendingStepPreview");
@@ -219,13 +335,12 @@ const PendingShadowHighlightExtension = Extension.create({
           init() {
             return {
               stepJsonBatches: [] as any[][],
-              // Track positions that get mapped through edits
-              // Each tracked change is either a deletion OR an insertion (split for independent mapping)
               trackedChanges: [] as Array<{
                 type: "deletion" | "insertion";
                 text: string;
                 trackedFrom: number;
                 trackedTo: number;
+                insertedHtml?: string;
               }>,
               decorations: DecorationSet.empty,
             };
@@ -246,35 +361,41 @@ const PendingShadowHighlightExtension = Extension.create({
                 text: string;
                 trackedFrom: number;
                 trackedTo: number;
+                insertedHtml?: string;
               }> = [];
 
               console.log(`[PendingShadowHighlight] Received new meta with ${batches.length} batches, docSize=${docSize}`);
 
               batches.forEach((batch: any[]) => {
-                const parsedSteps = parseSteps(tr.doc.type.schema, batch || []);
+                const rawBatch = batch || [];
+                const parsedSteps = parseSteps(tr.doc.type.schema, rawBatch);
                 const remappedSteps = remapStepsToBase(parsedSteps);
                 let lastDeletionRange: { from: number; to: number } | null = null;
 
-                remappedSteps.forEach((step: any) => {
+                remappedSteps.forEach((step: any, stepIdx: number) => {
+                  const rawStep = rawBatch[stepIdx];
                   const from = typeof step.from === "number" ? step.from : null;
                   const to = typeof step.to === "number" ? step.to : null;
-                  const deletedText = step.deletedText || null;
+                  let deletedText = step.deletedText || null;
                   const insertedText = step.insertedText || null;
 
                   let baseFrom = typeof from === "number" ? from : 1;
                   let baseTo = typeof to === "number" ? to : baseFrom;
 
                   const hasSlice = step.slice && (step.slice.size ?? 0) > 0;
-                  const isDeletion = deletedText && typeof deletedText === "string";
-                  const looksLikeDeletion = baseFrom < baseTo && !hasSlice;
+                  const hasInsertedContent = hasSlice || (insertedText && String(insertedText).trim().length > 0);
+                  const isDeletion = (deletedText && typeof deletedText === "string") || (baseFrom < baseTo && !hasInsertedContent);
+                  if (!deletedText && baseFrom < baseTo && baseTo <= docSize) {
+                    deletedText = tr.doc.textBetween(baseFrom, baseTo, " ");
+                  }
 
-                  if (isDeletion || looksLikeDeletion) {
+                  if (isDeletion && baseFrom < baseTo) {
                     let delFrom = baseFrom;
                     let delTo = baseTo;
                     if (delFrom > delTo) [delFrom, delTo] = [delTo, delFrom];
                     let safeFrom = Math.max(0, Math.min(delFrom, docSize));
                     let safeTo = Math.min(docSize, Math.max(0, Math.min(delTo, docSize)));
-                    const maxRange = 1200;
+                    const maxRange = Math.max(50000, Math.floor(docSize * 0.95));
                     if (safeTo - safeFrom > maxRange) safeTo = Math.min(safeFrom + maxRange, docSize);
                     if (safeFrom < safeTo) {
                       decorations.push(
@@ -293,16 +414,16 @@ const PendingShadowHighlightExtension = Extension.create({
                     }
                   }
 
-                  if (insertedText && typeof insertedText === "string") {
+                  const showInsertion = (insertedText && typeof insertedText === "string") || (rawStep?.slice?.content?.length > 0);
+                  if (showInsertion) {
                     const isReplacement = isDeletion;
-                    // Use baseFrom so insertion appears at start of replaced range. baseTo would place it one char too far right.
-                    let insertPos = baseFrom;
-                    // Fallback for delete-then-insert: when insertion comes after a deletion in the batch
-                    // and mapped position is invalid or out of bounds, use start of last deletion range
+                    let insertPos = isReplacement ? baseTo : baseFrom;
                     if (!isReplacement && lastDeletionRange && (insertPos < 1 || insertPos > docSize)) {
                       insertPos = lastDeletionRange.from;
                     }
                     const clampedPos = Math.max(1, Math.min(insertPos, docSize));
+                    const displayText = insertedText || extractSliceText(rawStep) || "";
+                    const displayHtml = rawStep ? sliceContentToHtml(tr.doc.type.schema, rawStep) : null;
 
                     console.log(`[PendingShadowHighlight] Creating insertion widget at ${clampedPos}`);
                     decorations.push(
@@ -311,19 +432,22 @@ const PendingShadowHighlightExtension = Extension.create({
                         () => {
                           const span = document.createElement("span");
                           span.className = "collaborator-pending-insertion";
-                          span.textContent = insertedText;
-                          span.setAttribute("contenteditable", "false");
+                          if (displayHtml && /<[a-z][\s\S]*>/i.test(displayHtml)) {
+                            span.innerHTML = displayHtml;
+                          } else {
+                            span.textContent = displayText;
+                          }
                           return span;
                         },
                         { side: 1 }
                       )
                     );
-                    // Track insertion SEPARATELY (position is a single point)
                     trackedChanges.push({
                       type: "insertion",
-                      text: insertedText,
+                      text: displayText,
                       trackedFrom: clampedPos,
                       trackedTo: clampedPos,
+                      insertedHtml: displayHtml && /<[a-z][\s\S]*>/i.test(displayHtml) ? displayHtml : undefined,
                     });
                   }
                 });
@@ -364,7 +488,7 @@ const PendingShadowHighlightExtension = Extension.create({
               console.log(`[PendingShadowHighlight] docChanged - mapping ${prev.trackedChanges.length} tracked changes`);
 
               prev.trackedChanges.forEach((change: any, idx: number) => {
-                const { type, text, trackedFrom, trackedTo } = change;
+                const { type, text, trackedFrom, trackedTo, insertedHtml } = change;
 
                 // Map the tracked position through the transaction
                 // Use assoc=-1 for 'from' (stay left of insertions at this point)
@@ -377,7 +501,7 @@ const PendingShadowHighlightExtension = Extension.create({
                 if (type === "deletion") {
                   let safeFrom = Math.max(0, Math.min(mappedFrom, docSize));
                   let safeTo = Math.min(docSize, Math.max(0, Math.min(mappedTo, docSize)));
-                  const maxRange = 1200;
+                  const maxRange = Math.max(50000, Math.floor(docSize * 0.95));
                   if (safeTo - safeFrom > maxRange) safeTo = Math.min(safeFrom + maxRange, docSize);
                   if (safeFrom < safeTo) {
                     decorations.push(
@@ -393,9 +517,8 @@ const PendingShadowHighlightExtension = Extension.create({
                     trackedTo: safeTo,
                   });
                 } else if (type === "insertion") {
-                  // For insertions, map with right association to stay after insertions at this point
                   const insertPos = Math.max(1, Math.min(tr.mapping.map(trackedFrom, 1), docSize));
-                  console.log(`[PendingShadowHighlight] Insertion ${idx}: ${trackedFrom} -> ${insertPos}`);
+                  const displayHtml = insertedHtml;
 
                   decorations.push(
                     Decoration.widget(
@@ -403,8 +526,11 @@ const PendingShadowHighlightExtension = Extension.create({
                       () => {
                         const span = document.createElement("span");
                         span.className = "collaborator-pending-insertion";
-                        span.textContent = text;
-                        span.setAttribute("contenteditable", "false");
+                        if (displayHtml && /<[a-z][\s\S]*>/i.test(displayHtml)) {
+                          span.innerHTML = displayHtml;
+                        } else {
+                          span.textContent = text;
+                        }
                         return span;
                       },
                       { side: 1 }
@@ -415,7 +541,8 @@ const PendingShadowHighlightExtension = Extension.create({
                     type: "insertion",
                     text,
                     trackedFrom: insertPos,
-                    trackedTo: insertPos, // Single point
+                    trackedTo: insertPos,
+                    insertedHtml,
                   });
                 }
               });
@@ -468,8 +595,8 @@ const AiCoachHighlightExtension = Extension.create({
               const doc = tr.doc;
               const decorations: Decoration[] = [];
               const highlights: typeof prev.highlights = [];
-
-              const maxRange = 1200;
+              const docSize = doc.content.size;
+              const maxRange = Math.max(50000, Math.floor(docSize * 0.95));
               for (const item of items) {
                 const anchor = (item?.anchor || "").trim();
                 if (!anchor) continue;
@@ -519,7 +646,8 @@ const AiCoachHighlightExtension = Extension.create({
               const doc = tr.doc;
               const decorations: Decoration[] = [];
               const updated: typeof prev.highlights = [];
-              const maxRange = 1200;
+              const docSize = doc.content.size;
+              const maxRange = Math.max(50000, Math.floor(docSize * 0.95));
 
               for (const h of prev.highlights) {
                 const range = findTextRangeNormalized(doc as any, h.anchor);
@@ -586,12 +714,12 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
           init() {
             return {
               stepJson: null as any[] | any | null,
-              // Split deletions and insertions for independent mapping
               trackedChanges: [] as Array<{
                 type: "deletion" | "insertion";
                 text: string;
                 trackedFrom: number;
                 trackedTo: number;
+                insertedHtml?: string;
               }>,
               decorations: DecorationSet.empty,
             };
@@ -617,6 +745,7 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
                 text: string;
                 trackedFrom: number;
                 trackedTo: number;
+                insertedHtml?: string;
               }> = [];
 
               const rawSteps = Array.isArray(meta) ? meta : [];
@@ -624,25 +753,29 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
               const remappedSteps = remapStepsToBase(parsedSteps);
               let lastDeletionRangePreview: { from: number; to: number } | null = null;
 
-              remappedSteps.forEach((step: any) => {
+              remappedSteps.forEach((step: any, stepIdx: number) => {
+                const rawStep = rawSteps[stepIdx];
                 const from = typeof step.from === "number" ? step.from : null;
                 const to = typeof step.to === "number" ? step.to : null;
-                const deletedText = step.deletedText || null;
+                let deletedText = step.deletedText || null;
                 const insertedText = step.insertedText || null;
 
                 let baseFrom = typeof from === "number" ? from : 1;
                 let baseTo = typeof to === "number" ? to : baseFrom;
                 const hasSlice = step.slice && (step.slice.size ?? 0) > 0;
-                const isDeletion = deletedText && typeof deletedText === "string";
-                const looksLikeDeletion = baseFrom < baseTo && !hasSlice;
+                const hasInsertedContent = hasSlice || (insertedText && String(insertedText).trim().length > 0);
+                const isDeletion = (deletedText && typeof deletedText === "string") || (baseFrom < baseTo && !hasInsertedContent);
+                if (!deletedText && baseFrom < baseTo && baseTo <= docSize) {
+                  deletedText = tr.doc.textBetween(baseFrom, baseTo, " ");
+                }
 
-                if (isDeletion || looksLikeDeletion) {
+                if (isDeletion && baseFrom < baseTo) {
                   let delFrom = baseFrom;
                   let delTo = baseTo;
                   if (delFrom > delTo) [delFrom, delTo] = [delTo, delFrom];
                   let safeFrom = Math.max(0, Math.min(delFrom, docSize));
                   let safeTo = Math.min(docSize, Math.max(0, Math.min(delTo, docSize)));
-                  const maxRange = 1200;
+                  const maxRange = Math.max(50000, Math.floor(docSize * 0.95));
                   if (safeTo - safeFrom > maxRange) safeTo = Math.min(safeFrom + maxRange, docSize);
                   if (safeFrom < safeTo) {
                     decorations.push(
@@ -661,22 +794,28 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
                   }
                 }
 
-                if (insertedText && typeof insertedText === "string") {
+                const showInsertion = (insertedText && typeof insertedText === "string") || (rawStep?.slice?.content?.length > 0);
+                if (showInsertion) {
+                  // Replacement: show insertion after the deletion (at baseTo). Otherwise at baseFrom.
                   const isReplacement = isDeletion;
-                  // Use baseFrom so insertion appears at start of replaced range. baseTo would place it one char too far right.
-                  let insertPos = baseFrom;
+                  let insertPos = isReplacement ? baseTo : baseFrom;
                   if (!isReplacement && lastDeletionRangePreview && (insertPos < 1 || insertPos > docSize)) {
                     insertPos = lastDeletionRangePreview.from;
                   }
                   const clampedPos = Math.max(1, Math.min(insertPos, docSize));
+                  const displayText = insertedText || extractSliceText(rawStep) || "";
+                  const displayHtml = rawStep ? sliceContentToHtml(tr.doc.type.schema, rawStep) : null;
                   decorations.push(
                     Decoration.widget(
                       clampedPos,
                       () => {
                         const span = document.createElement("span");
                         span.className = "owner-pending-insertion";
-                        span.textContent = insertedText;
-                        span.setAttribute("contenteditable", "false");
+                        if (displayHtml && /<[a-z][\s\S]*>/i.test(displayHtml)) {
+                          span.innerHTML = displayHtml;
+                        } else {
+                          span.textContent = displayText;
+                        }
                         return span;
                       },
                       { side: 1 }
@@ -684,9 +823,10 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
                   );
                   trackedChanges.push({
                     type: "insertion",
-                    text: insertedText,
+                    text: displayText,
                     trackedFrom: clampedPos,
                     trackedTo: clampedPos,
+                    insertedHtml: displayHtml && /<[a-z][\s\S]*>/i.test(displayHtml) ? displayHtml : undefined,
                   });
                 }
               });
@@ -721,7 +861,7 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
               }
 
               prev.trackedChanges.forEach((change: any) => {
-                const { type, text, trackedFrom, trackedTo } = change;
+                const { type, text, trackedFrom, trackedTo, insertedHtml } = change;
 
                 const mappedFrom = tr.mapping.map(trackedFrom, -1);
                 const mappedTo = tr.mapping.map(trackedTo, 1);
@@ -729,7 +869,7 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
                 if (type === "deletion") {
                   let safeFrom = Math.max(0, Math.min(mappedFrom, docSize));
                   let safeTo = Math.min(docSize, Math.max(0, Math.min(mappedTo, docSize)));
-                  const maxRange = 1200;
+                  const maxRange = Math.max(50000, Math.floor(docSize * 0.95));
                   if (safeTo - safeFrom > maxRange) safeTo = Math.min(safeFrom + maxRange, docSize);
                   if (safeFrom < safeTo) {
                     decorations.push(
@@ -746,14 +886,18 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
                   });
                 } else if (type === "insertion") {
                   const insertPos = Math.max(1, Math.min(tr.mapping.map(trackedFrom, 1), docSize));
+                  const displayHtml = insertedHtml;
                   decorations.push(
                     Decoration.widget(
                       insertPos,
                       () => {
                         const span = document.createElement("span");
                         span.className = "owner-pending-insertion";
-                        span.textContent = text;
-                        span.setAttribute("contenteditable", "false");
+                        if (displayHtml && /<[a-z][\s\S]*>/i.test(displayHtml)) {
+                          span.innerHTML = displayHtml;
+                        } else {
+                          span.textContent = text;
+                        }
                         return span;
                       },
                       { side: 1 }
@@ -765,6 +909,7 @@ const PendingStepPreviewExtension = Extension.create<{ previewEnabled: boolean }
                     text,
                     trackedFrom: insertPos,
                     trackedTo: insertPos,
+                    insertedHtml,
                   });
                 }
               });
@@ -842,6 +987,7 @@ function TiptapEditor({
   highlightPreviewMode = "collaborators",
   decorationRefreshTrigger = 0,
   onHighlightClick,
+  onTryEdit,
 }: TiptapEditorProps & { isReadOnly?: boolean; hasPendingChanges?: boolean; onPendingChangeClick?: () => void }) {
   const isUpdatingRef = useRef(false);
   const isInitialMountRef = useRef(true);
@@ -930,13 +1076,10 @@ function TiptapEditor({
       );
     }
 
-    // Add step capture extension for collaborators to capture steps for suggestions
-    // FIX: Pass talkingPointId to track steps per talking point
-    if (isCollaborator && talkingPointId) {
-      baseExtensions.push(StepCaptureExtension.configure({
-        talkingPointId: talkingPointId,
-      }));
-    }
+    // Step capture disabled for collaborators - they use Create Edit (select text → modal) only
+    // if (isCollaborator && talkingPointId) {
+    //   baseExtensions.push(StepCaptureExtension.configure({ talkingPointId }));
+    // }
 
     baseExtensions.push(PendingShadowHighlightExtension);
     baseExtensions.push(AiCoachHighlightExtension);
@@ -949,6 +1092,7 @@ function TiptapEditor({
 
   const editor = useEditor({
     editable: !isReadOnly,
+    // Collaborators: read-only, use Create Edit (select text → Suggest Edit) only
     shouldRerenderOnTransaction: true,
     extensions,
     content: cleanContent,
@@ -979,6 +1123,13 @@ function TiptapEditor({
       transformPastedHTML: (html) => {
         return html;
       },
+      handleKeyDown: (view, event) => {
+        if (onTryEdit && (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete" || event.key === "Enter")) {
+          onTryEdit();
+          return true;
+        }
+        return false;
+      },
       handleDOMEvents: {
         mouseup: (view) => {
           // Use a small delay to ensure browser selection is updated
@@ -993,10 +1144,18 @@ function TiptapEditor({
                 const selectedText = state.doc.textBetween(from, to, " ");
                 if (selectedText.trim().length > 0) {
                   const coords = view.coordsAtPos(to);
-                  onTextSelect(selectedText.trim(), { x: coords.left, y: coords.top }, { from, to });
+                  let selectedHtml: string | undefined;
+                  try {
+                    const slice = state.doc.slice(from, to);
+                    if (slice.content.size > 0) {
+                      const div = document.createElement("div");
+                      DOMSerializer.fromSchema(state.schema).serializeFragment(slice.content, { document }, div);
+                      selectedHtml = div.innerHTML?.trim() || undefined;
+                    }
+                  } catch (_) {}
+                  onTextSelect(selectedText.trim(), { x: coords.left, y: coords.top }, { from, to }, selectedHtml);
                 }
               } else if (browserSelection.trim().length > 0) {
-                // Fallback to browser selection if Tiptap selection is empty
                 const selection = window.getSelection();
                 if (selection && selection.rangeCount > 0) {
                   const range = selection.getRangeAt(0);
@@ -1148,7 +1307,8 @@ function TiptapEditor({
 
   return (
     <div className="border border-gray-300 rounded-lg overflow-hidden bg-white">
-      {/* Toolbar */}
+      {/* Toolbar - hidden for collaborators (they use formatting only in Suggest Edit modal) */}
+      {!isCollaborator && (
       <div className="border-b border-gray-200 bg-gray-50 px-4 py-2.5 flex items-center gap-2 flex-wrap">
         {/* Headings */}
         <div className="flex items-center gap-1 border-r border-gray-300 pr-2 mr-2">
@@ -1292,9 +1452,11 @@ function TiptapEditor({
           </button>
         </div>
       </div>
+      )}
 
       {/* Editor Content */}
       <div
+        className={pendingChanges.length > 0 ? "editor-has-pending-highlights" : undefined}
         onClick={(e) => {
           const el = e.target as HTMLElement;
           const highlightEl = el.closest(".ai-coach-suggestion, .ai-coach-suggested-insertion, .collaborator-pending-deletion, .collaborator-pending-insertion, .owner-pending-deletion, .owner-pending-insertion");
@@ -1366,6 +1528,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [newTermInput, setNewTermInput] = useState("");
   const [spellingConvention, setSpellingConvention] = useState<"us" | "uk" | "auto">("auto");
   const [selectedText, setSelectedText] = useState<string>("");
+  const [selectedHtml, setSelectedHtml] = useState<string>("");
   const [selectionPosition, setSelectionPosition] = useState<{ x: number; y: number } | null>(null);
   const [selectionRange, setSelectionRange] = useState<{ from: number; to: number } | null>(null);
   const [chatMessages, setChatMessages] = useState<Array<{ from: "user" | "ai"; text: string; highlightedText?: string }>>([]);
@@ -1416,6 +1579,15 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [editingChapterTitleValue, setEditingChapterTitleValue] = useState("");
   const sectionTitleEditStartedAtRef = useRef<number>(0);
   const chapterTitleEditStartedAtRef = useRef<number>(0);
+  // Collaborator "Create Edit" modal: select text → edit in rich editor → suggest
+  const [createEditModalOpen, setCreateEditModalOpen] = useState(false);
+  const [createEditInitialContent, setCreateEditInitialContent] = useState<string>("");
+  const [createEditTpId, setCreateEditTpId] = useState<number | null>(null);
+  const [createEditFrom, setCreateEditFrom] = useState<number>(0);
+  const [createEditTo, setCreateEditTo] = useState<number>(0);
+  const [createEditOriginalText, setCreateEditOriginalText] = useState("");
+  const [isSubmittingCreateEdit, setIsSubmittingCreateEdit] = useState(false);
+  const createEditEditorRef = useRef<any>(null);
 
   useEffect(() => {
     getCurrentUser().then((result) => {
@@ -1444,7 +1616,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     const steps = getChangeSteps(change);
 
     // First try normal flow with parsed steps
-    const preview = getPreviewFragments(doc, steps, { maxFragment: 200 });
+    const preview = getPreviewFragments(doc, steps, { maxFragment: 50000 });
 
     console.log(`[getChangePreviewText] From getPreviewFragments: deleted="${preview.deleted}", inserted="${preview.inserted}"`);
 
@@ -1478,15 +1650,29 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       }
     }
 
-    // Join all parts with a separator for clarity
+    // Join parts: use " ... " only between distinct edit regions, not between single chars from per-keystroke steps
     const rawDeleted = deletedParts.join(" ... ");
-    const rawInserted = insertedParts.join(" ... ");
+    const rawInserted = (() => {
+      if (insertedParts.length === 0) return "";
+      // If all parts are single chars and form one contiguous string, merge them (avoids "P ... r ... o ... j ..." from delete+retype)
+      const allSingleChars = insertedParts.every((p) => p.length === 1);
+      if (allSingleChars && insertedParts.length > 1) {
+        return insertedParts.join("");
+      }
+      return insertedParts.join(" ... ");
+    })();
 
     console.log(`[getChangePreviewText] Extracted from raw: deleted="${rawDeleted}", inserted="${rawInserted}"`);
 
     // Prefer raw extraction if it has content (more reliable for compressed steps)
     // Filter out very short deletions that are likely artifacts (like single "-" or whitespace)
     const cleanDeleted = rawDeleted && rawDeleted.length > 1 && rawDeleted.trim().length > 0 ? rawDeleted : "";
+
+    // No net change: delete + re-insert of same text (e.g. "Projects" → delete → "Projects")
+    const norm = (s: string) => (s || "").replace(/\s+/g, " ").trim();
+    if (cleanDeleted && rawInserted && norm(cleanDeleted) === norm(rawInserted)) {
+      return { deleted: "", inserted: "" }; // Triggers "Preview unavailable" - no real change
+    }
 
     if (cleanDeleted || rawInserted) {
       return { deleted: cleanDeleted, inserted: rawInserted };
@@ -1647,7 +1833,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     const handleClickOutside = () => {
       if (selectedText && selectionPosition) {
         setSelectedText("");
+        setSelectedHtml("");
         setSelectionPosition(null);
+        setSelectionRange(null);
       }
     };
     document.addEventListener("click", handleClickOutside);
@@ -2267,14 +2455,26 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
         console.log(`[handleSuggestEdit] Compressing: original="${originalText.substring(0, 50)}...", final="${finalText.substring(0, 50)}..."`);
 
-        // If texts are the same, no change needed
+        // No net change: user deleted and retyped the same text (e.g. "Projects" → delete → "Projects")
+        const norm = (s: string) => (s || "").replace(/\s+/g, " ").trim();
+        if (norm(originalText) === norm(finalText)) {
+          (window as any).__CAPTURED_STEPS_BY_TP__[tpId] = [];
+          notification.info("No changes to suggest. The text is the same as before your edits.");
+          return;
+        }
+
+        // If texts are the same, no change needed (legacy check - now handled above)
         if (originalText !== finalText) {
           // Multi-hunk diff algorithm to detect SEPARATE edit regions
           // This properly handles "add here, delete there" scenarios
           type Hunk = { origStart: number; origEnd: number; finalStart: number; finalEnd: number; deleted: string; inserted: string };
           const hunks: Hunk[] = [];
 
-          const MIN_MATCH = 5; // Minimum matching chars; use longest match to reduce spurious splits
+          // Use higher MIN_MATCH to avoid spurious matches (e.g. "ment" in "implement" matching "requitment")
+          const MIN_MATCH = 12;
+          // When change is large (length differs by >30%), use single hunk - avoid wrong sync points from coincidental substrings
+          const lenRatio = Math.abs(originalText.length - finalText.length) / Math.max(1, Math.max(originalText.length, finalText.length));
+          const useSingleHunk = lenRatio > 0.3;
 
           let origIdx = 0;
           let finalIdx = 0;
@@ -2295,41 +2495,68 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               break;
             }
 
-            // Found a difference - find sync point using LONGEST match (not first match)
-            // This better detects single contiguous deletion+insertion when they overlap
+            // Found a difference - find sync point
+            // PREFER sync at START of final (smallest searchFinal): the kept content begins there.
+            // This avoids both (a) under-delete: matching "away from your body" in deleted para,
+            // and (b) over-delete: matching it in kept para - we sync at "It's crucial to cut" instead.
             const hunkOrigStart = origIdx;
             const hunkFinalStart = finalIdx;
 
             let bestOrigEnd = originalText.length;
             let bestFinalEnd = finalText.length;
             let bestMatchLen = 0;
+            let bestSearchFinal = Infinity;
 
-            const searchLimitOrig = Math.min(origIdx + 500, originalText.length); // Limit search range
-            const searchLimitFinal = Math.min(finalIdx + 500, finalText.length);
+            // When change is large, skip sync search - treat as single replacement (avoids wrong matches like "ment")
+            if (!useSingleHunk) {
+              const searchLimitOrig = originalText.length;
+              const searchLimitFinal = finalText.length;
 
-            for (let searchOrig = origIdx; searchOrig <= searchLimitOrig - MIN_MATCH; searchOrig++) {
-              for (let searchFinal = finalIdx; searchFinal <= searchLimitFinal - MIN_MATCH; searchFinal++) {
-                let matchLen = 0;
-                while (
-                  searchOrig + matchLen < originalText.length &&
-                  searchFinal + matchLen < finalText.length &&
-                  originalText[searchOrig + matchLen] === finalText[searchFinal + matchLen]
-                ) {
-                  matchLen++;
-                }
-                // Prefer longest match to reduce spurious splits (single contiguous change)
-                if (matchLen >= MIN_MATCH && matchLen > bestMatchLen) {
-                  bestMatchLen = matchLen;
-                  bestOrigEnd = searchOrig;
-                  bestFinalEnd = searchFinal;
+              for (let searchOrig = origIdx; searchOrig <= searchLimitOrig - MIN_MATCH; searchOrig++) {
+                for (let searchFinal = finalIdx; searchFinal <= searchLimitFinal - MIN_MATCH; searchFinal++) {
+                  let matchLen = 0;
+                  while (
+                    searchOrig + matchLen < originalText.length &&
+                    searchFinal + matchLen < finalText.length &&
+                    originalText[searchOrig + matchLen] === finalText[searchFinal + matchLen]
+                  ) {
+                    matchLen++;
+                  }
+                  if (matchLen >= MIN_MATCH) {
+                    // Prefer sync at START of final (kept content): smallest searchFinal
+                    // When same phrase appears in deleted and kept, pick the one at boundary
+                    if (searchFinal < bestSearchFinal || (searchFinal === bestSearchFinal && matchLen > bestMatchLen)) {
+                      bestSearchFinal = searchFinal;
+                      bestMatchLen = matchLen;
+                      bestOrigEnd = searchOrig;
+                      bestFinalEnd = searchFinal;
+                    }
+                  }
                 }
               }
             }
 
-            const foundMatch = bestMatchLen >= MIN_MATCH;
+            const foundMatch = !useSingleHunk && bestMatchLen >= MIN_MATCH;
             if (!foundMatch) {
               bestOrigEnd = originalText.length;
               bestFinalEnd = finalText.length;
+            }
+
+            // Avoid splitting a word at a shared boundary char (e.g. "approximate" vs "some" both have "e")
+            // When sync lands on "e" in "e projects...", we get deleted="...appropiat", inserted="...som",
+            // and "e" is treated as unchanged - wrong. Extend hunk to include the boundary letter in both.
+            const isLetter = (c: string) => /[a-zA-Z]/.test(c);
+            while (
+              foundMatch &&
+              bestOrigEnd < originalText.length &&
+              bestFinalEnd < finalText.length &&
+              bestMatchLen > MIN_MATCH &&
+              isLetter(originalText[bestOrigEnd]) &&
+              isLetter(finalText[bestFinalEnd - 1])
+            ) {
+              bestOrigEnd += 1;
+              bestFinalEnd += 1;
+              bestMatchLen -= 1;
             }
 
             // Create hunk for this change region
@@ -2407,8 +2634,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               };
 
               if (hunk.inserted) {
-                step.slice = { content: [{ type: "text", text: hunk.inserted }] };
+                step.slice = { content: [{ type: "text", text: hunk.inserted }], openStart: 0, openEnd: 0 };
                 step.insertedText = hunk.inserted;
+              } else {
+                // Deletion-only: empty slice required for valid ReplaceStep
+                step.slice = { content: [], openStart: 0, openEnd: 0 };
               }
 
               if (hunk.deleted) {
@@ -2525,6 +2755,83 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     } catch (error) {
       console.error("Error suggesting edit:", error);
       notification.error("Error creating suggestion. Please try again.");
+    }
+  };
+
+  /**
+   * handleCreateEditSuggest - Collaborator select-text flow: build replace step from modal and submit
+   */
+  const handleCreateEditSuggest = async () => {
+    if (!createEditTpId || createEditFrom < 0 || createEditTo <= createEditFrom) return;
+    const editor = createEditEditorRef.current;
+    if (!editor) return;
+    setIsSubmittingCreateEdit(true);
+    try {
+      const html = editor.getHTML();
+      let sliceJson: { content: any[]; openStart: number; openEnd: number };
+      const plainText = htmlToPlainTextForMatching(html).trim();
+      if (plainText) {
+        try {
+          const dom = document.createElement("div");
+          dom.innerHTML = html;
+          const slice = PMDOMParser.fromSchema(editor.schema).parseSlice(dom);
+          sliceJson = slice.toJSON();
+          // Use open slice (openStart=1, openEnd=1) so the content can merge when replacing
+          // within a block (e.g. a word in a paragraph). Without this, we get "Inserted content
+          // deeper than insertion position" because a closed slice assumes block-level insertion.
+          sliceJson.openStart = 1;
+          sliceJson.openEnd = 1;
+        } catch {
+          sliceJson = { content: [{ type: "paragraph", content: [{ type: "text", text: plainText }] }], openStart: 1, openEnd: 1 };
+        }
+      } else {
+        sliceJson = { content: [], openStart: 0, openEnd: 0 };
+      }
+      const step: any = {
+        stepType: "replace",
+        from: createEditFrom,
+        to: createEditTo,
+        deletedText: createEditOriginalText,
+        insertedText: plainText || undefined,
+        slice: sliceJson,
+      };
+      const result = await createContentChange({
+        talking_point_id: createEditTpId,
+        step_json: [step],
+      });
+      if (result.success) {
+        setCreateEditModalOpen(false);
+        setCreateEditInitialContent("");
+        setCreateEditTpId(null);
+        setCreateEditFrom(0);
+        setCreateEditTo(0);
+        setCreateEditOriginalText("");
+        setSelectedText("");
+        setSelectedHtml("");
+        setSelectionPosition(null);
+        setSelectionRange(null);
+        if (window.getSelection) window.getSelection()?.removeAllRanges();
+        setCurrentTalkingPointId(createEditTpId);
+        try {
+          const changesResult = await getContentChanges(createEditTpId);
+          if (changesResult.success && changesResult.data) {
+            setContentChanges((prev) => {
+              const filtered = prev.filter((c) => c.talking_point !== createEditTpId);
+              return [...filtered, ...changesResult.data];
+            });
+          }
+        } catch (_) {}
+        setHighlightPreviewMode("collaborators");
+        setActiveRightView("changes");
+        notification.success("Suggestion submitted. The author can approve or reject it.");
+      } else {
+        notification.error("Failed to submit suggestion. Please try again.");
+      }
+    } catch (error) {
+      console.error("Error submitting create edit:", error);
+      notification.error("Error submitting suggestion. Please try again.");
+    } finally {
+      setIsSubmittingCreateEdit(false);
     }
   };
 
@@ -2857,12 +3164,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       return;
     }
 
-    // Collaborators (editors): auto-submit as suggestion when leaving the field
+    // Owners: auto-submit as suggestion when leaving the field (collaborators use Create Edit only)
     const hasEdits = !!hasUnsavedChanges[tpId];
     const capturedStepsForTp = (window as any).__CAPTURED_STEPS_BY_TP__?.[tpId];
     const hasCapturedSteps = capturedStepsForTp && capturedStepsForTp.length > 0;
-
-    if (hasEdits && hasCapturedSteps && bookId) {
+    if (isBookOwner && hasEdits && hasCapturedSteps && bookId) {
       await handleSuggestEdit(tpId);
     }
   };
@@ -3978,8 +4284,9 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               handleTpBlur(tpId);
                             }}
                             placeholder="Start writing or click 'Generate Text' to create content from the talking point..."
-                            onTextSelect={(text, position, range) => {
+                            onTextSelect={(text, position, range, html) => {
                               setSelectedText(text);
+                              setSelectedHtml(html || "");
                               setSelectionPosition(position);
                               setSelectionRange(range || null);
                               // FIX: Track current talking point (steps are already tracked per TP)
@@ -3996,7 +4303,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             pendingChanges={contentChanges.filter(c => c.talking_point === tpId && c.status === "pending")}
                             talkingPointId={tpId}
                             enableCollaboration={isCollaboration && (isBookOwner || collaboratorRole === "editor")}
-                            isReadOnly={!isBookOwner && collaboratorRole !== "editor"}
+                            isReadOnly={!isBookOwner}
+                            onTryEdit={!isBookOwner ? () => notification.info("Select a piece of text and click Suggest Edit to propose changes.") : undefined}
                             hasPendingChanges={hasPendingChanges}
                             previewStepJson={previewStepJson}
                             shadowSuggestions={shadowSuggestions}
@@ -4063,46 +4371,52 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               }
                             }}
                           />
-                          {/* Suggest Edit / Apply Changes button - for editors only */}
-                          {!isBookOwner && collaboratorRole === "editor" && (() => {
-                            const hasEdits = !!hasUnsavedChanges[tpId];
-                            const capturedStepsForTp = (window as any).__CAPTURED_STEPS_BY_TP__?.[tpId];
-                            const hasCapturedSteps = capturedStepsForTp && capturedStepsForTp.length > 0;
-
-                            if (!hasEdits || !hasCapturedSteps) return null;
-
-                            return (
-                              <div className="mt-2 space-y-2">
-                               
-                                <div className="flex justify-between items-center gap-3">
-                                  <span className="text-xs text-gray-500">
-                                    Changes are saved automatically when you leave the field
-                                  </span>
-                                  <button
-                                    onClick={() => handleSuggestEdit(tpId)}
-                                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 text-sm font-medium"
-                                  >
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                    </svg>
-                                    Apply Changes ({capturedStepsForTp.length} steps)
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })()}
+                          {/* Collaborators use Create Edit (select text → modal) instead of Apply Changes */}
+                          {/* Apply Changes removed for collaborators - they suggest via selection popover */}
                           {/* Quick Actions & Add to Chat - appears when text is selected */}
-                          {selectedText && selectionPosition && currentTalkingPointId === tpId && (
+                          {selectedText && selectionPosition && currentTalkingPointId === tpId && (() => {
+                            const gap = 20;
+                            const estHeight = 320;
+                            const preferredTop = selectionPosition.y + gap;
+                            const wouldOverflow = preferredTop + estHeight > window.innerHeight - 16;
+                            const top = wouldOverflow ? Math.max(16, window.innerHeight - estHeight - 16) : preferredTop;
+                            return (
                             <div
-                              className="fixed z-50 bg-[#011b2d] border border-[#2d3a4a] rounded-lg shadow-lg p-1 flex flex-col gap-2"
+                              className="fixed z-50 bg-[#011b2d] border border-[#2d3a4a] rounded-lg shadow-lg p-1 flex flex-col gap-2 max-h-[calc(100vh-32px)] overflow-y-auto"
                               style={{
                                 left: `${selectionPosition.x}px`,
-                                top: `${selectionPosition.y + 20}px`,
+                                top: `${top}px`,
                               }}
                               onClick={(e) => e.stopPropagation()}
                             >
                               {/* Quick Actions */}
                               <div className="flex flex-col gap-0.5">
+                                {/* Create Edit / Suggest Edit - only action for collaborators */}
+                                {!isBookOwner && collaboratorRole === "editor" && selectionRange && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const initialContent = selectedHtml
+                                        ? selectedHtml
+                                        : `<p>${String(selectedText).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`;
+                                      setCreateEditInitialContent(initialContent);
+                                      setCreateEditOriginalText(selectedText);
+                                      setCreateEditTpId(currentTalkingPointId ?? null);
+                                      setCreateEditFrom(selectionRange.from);
+                                      setCreateEditTo(selectionRange.to);
+                                      setCreateEditModalOpen(true);
+                                    }}
+                                    className="px-3 py-2 text-sm text-[#CDF056] font-medium rounded hover:bg-[#1a2a3a] flex items-center gap-2 w-full text-left border border-[#CDF056]/30"
+                                    title="Suggest an edit for the author to review"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                    </svg>
+                                    Suggest Edit
+                                  </button>
+                                )}
+                                {isBookOwner && (
+                                <>
                                 <button
                                   onClick={() => handleQuickAction("shorten")}
                                   disabled={isApplyingQuickAction}
@@ -4156,6 +4470,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                   </svg>
                                   More Actions
                                 </button>
+                                </>
+                                )}
                               </div>
                               {/* Separator */}
                               <div className="border-t border-[#2d3a4a] my-1"></div>
@@ -4186,7 +4502,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                 Add to Chat
                               </button>
                             </div>
-                          )}
+                          );
+                          })()}
                         </div>
                       </div>
                     );
@@ -4356,11 +4673,11 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     console.log("Collaborator view - relevant changes:", relevantChanges.length, "changes:", relevantChanges.map(c => ({ id: c.id, tp: c.talking_point, status: c.status })));
                   }
 
-                  // Sort by created_at ascending (oldest first)
-                  relevantChanges = relevantChanges.sort((a, b) => {
+                  // Sort by created_at descending (newest first)
+                  relevantChanges = [...relevantChanges].sort((a, b) => {
                     const dateA = new Date(a.created_at).getTime();
                     const dateB = new Date(b.created_at).getTime();
-                    return dateA - dateB; // Ascending order (oldest first)
+                    return dateB - dateA; // Newest first
                   });
 
                   if (relevantChanges.length === 0) {
@@ -5809,6 +6126,43 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             )}
           </div>
         </>
+      )}
+
+      {/* Create Edit Modal - collaborator suggests change from selected text (rich editor with formatting) */}
+      {createEditModalOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+          onClick={() => !isSubmittingCreateEdit && setCreateEditModalOpen(false)}
+        >
+          <div
+            className="bg-[#011b2d] border border-[#2d3a4a] rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 border-b border-[#2d3a4a] flex items-center justify-between shrink-0">
+              <h3 className="text-lg font-semibold text-white">Suggest Edit</h3>
+              <button
+                onClick={() => !isSubmittingCreateEdit && setCreateEditModalOpen(false)}
+                className="text-gray-400 hover:text-white p-1"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto flex-1 min-h-0">
+              <p className="text-sm text-gray-400 mb-4">Edit the text below with formatting (bold, italic, lists, etc.). Your suggestion will appear to the author with the original highlighted and your replacement shown.</p>
+              <CreateEditModalEditor
+                key={`${createEditTpId}-${createEditFrom}`}
+                initialContent={createEditInitialContent}
+                editorRef={createEditEditorRef}
+                disabled={isSubmittingCreateEdit}
+                onSuggest={handleCreateEditSuggest}
+                onCancel={() => !isSubmittingCreateEdit && setCreateEditModalOpen(false)}
+                isSubmitting={isSubmittingCreateEdit}
+              />
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Collaborator Management Modal */}

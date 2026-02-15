@@ -104,6 +104,12 @@
   height: 0;
 }
 
+/* Hide placeholder when pending highlights are shown (e.g. collaborator suggestions on empty editor) */
+.editor-has-pending-highlights .ProseMirror p.is-editor-empty:first-child::before {
+  content: none !important;
+  display: none !important;
+}
+
 /* Inline highlight for pending change focus */
 .pending-step-deletion {
   background-color: #fee2e2 !important;
@@ -190,9 +196,12 @@
   display: inline !important;
 }
 
-.collaborator-pending-insertion {
+.collaborator-pending-insertion,
+.collaborator-pending-insertion * {
   background-color: rgba(255, 230, 0, 0.3) !important;
   color: #92400e !important;
+}
+.collaborator-pending-insertion {
   display: inline !important;
   cursor: pointer !important;
   white-space: pre-wrap !important;
@@ -203,6 +212,15 @@
   border-radius: 2px !important;
   margin: 0 1px !important;
 }
+
+.collaborator-pending-insertion strong,
+.owner-pending-insertion strong { font-weight: 600; }
+.collaborator-pending-insertion em,
+.owner-pending-insertion em { font-style: italic; }
+.collaborator-pending-insertion s,
+.owner-pending-insertion s { text-decoration: line-through; }
+.collaborator-pending-insertion code,
+.owner-pending-insertion code { font-family: monospace; padding: 0 2px; border-radius: 2px; }
 
 /* AI Coach Review highlights - amber for suggested text, green for replacement */
 .ProseMirror .ai-coach-suggestion {
@@ -236,8 +254,12 @@
   display: inline !important;
 }
 
-.owner-pending-insertion {
+.owner-pending-insertion,
+.owner-pending-insertion * {
   background-color: rgba(0, 255, 0, 0.2) !important;
+  color: inherit;
+}
+.owner-pending-insertion {
   border-left: 2px solid #00cc00 !important;
   display: inline !important;
   white-space: pre-wrap !important;
