@@ -1123,7 +1123,7 @@ function TiptapEditor({
       transformPastedHTML: (html) => {
         return html;
       },
-      handleKeyDown: (view, event) => {
+      handleKeyDown: (_view, event) => {
         if (onTryEdit && (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete" || event.key === "Enter")) {
           onTryEdit();
           return true;

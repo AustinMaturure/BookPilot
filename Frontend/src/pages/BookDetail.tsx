@@ -198,9 +198,9 @@ export default function BookDetail() {
               const isCollaborator = book.is_collaboration && book.collaborator_role;
               const isRestrictedTab = ["overview", "position", "outline", "checks", "publish"].includes(tab.id);
               const isViewerOrCommenter = book.collaborator_role === "viewer" || book.collaborator_role === "commenter";
-              const isDisabled = tab.id === "position"
-                ? isCollaborator
-                : isRestrictedTab && isViewerOrCommenter;
+              const isDisabled: boolean = tab.id === "position"
+                ? !!isCollaborator
+                : !!(isRestrictedTab && isViewerOrCommenter);
               
               return (
                 <button
