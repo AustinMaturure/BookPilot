@@ -12,6 +12,7 @@ type BookSummary = {
   is_collaboration?: boolean;
   collaborator_role?: "editor" | "viewer" | "commenter" | null;
   owner_name?: string | null;
+  created_at?: string | null;
 };
 
 type BookCardProps = {
@@ -50,9 +51,9 @@ function BookCard({ book, onSelect, onDelete, onUpdate, canDelete, canEdit }: Bo
   
   const subtitle = book.core_topic || "No subtitle";
   const goal = "AUTHORITY BUILDING"; // Placeholder
-  const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days from now
 
-  const formatDate = (date: Date) => {
+  const formatDate = (dateStr: string | Date) => {
+    const date = typeof dateStr === 'string' ? new Date(dateStr) : dateStr;
     return date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
   };
 
@@ -234,12 +235,12 @@ function BookCard({ book, onSelect, onDelete, onUpdate, canDelete, canEdit }: Bo
       </div>
       <hr className="border-gray-700 mb-4" />
 
-      {/* Due Date */}
+      {/* Created Date */}
       <div className="flex items-center gap-2">
         <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
-        <span className="text-gray-400 text-xs">{formatDate(dueDate)}</span>
+        <span className="text-gray-400 text-xs">{book.created_at ? formatDate(book.created_at) : '—'}</span>
       </div>
     </div>
   );
@@ -250,6 +251,9 @@ export default function Books() {
   const notification = useNotification();
   const [books, setBooks] = useState<BookSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newBookTitle, setNewBookTitle] = useState("New Book Project");
+  const [isCreating, setIsCreating] = useState(false);
 
   const loadBooks = async () => {
     setLoading(true);
@@ -277,17 +281,31 @@ export default function Books() {
     setLoading(false);
   };
 
-  const handleCreateBook = async () => {
-    const title = window.prompt("Book title", "New Book Project");
-    if (title === null) return;
-    const res = await createBook({ title });
-    if (res.success && res.data?.id) {
-      // Navigate to the position tab of the newly created book
-      navigate(`/book/${res.data.id}?tab=position`);
-    } else {
-      // If navigation fails, still reload books list
-      await loadBooks();
+  const handleCreateBookClick = () => {
+    setNewBookTitle("New Book Project");
+    setShowCreateModal(true);
+  };
+
+  const handleCreateBookSubmit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const title = newBookTitle.trim() || "New Book Project";
+    setIsCreating(true);
+    try {
+      const res = await createBook({ title });
+      if (res.success && res.data?.id) {
+        setShowCreateModal(false);
+        navigate(`/book/${res.data.id}?tab=position`);
+      } else {
+        notification.error(res.error || "Failed to create book");
+        await loadBooks();
+      }
+    } finally {
+      setIsCreating(false);
     }
+  };
+
+  const handleCloseCreateModal = () => {
+    if (!isCreating) setShowCreateModal(false);
   };
 
   const handleUpdateBook = async (id: number, data: { title: string; core_topic: string }) => {
@@ -335,7 +353,7 @@ export default function Books() {
             <p className="text-gray-400 text-sm">Manage your current projects and ideas.</p>
           </div>
           <button
-            onClick={handleCreateBook}
+            onClick={handleCreateBookClick}
             className="bg-[#CDF056] rounded-xl border hover:bg-[#f59e0b] text-[#0a1a2e] font-semibold px-6 py-2  flex items-center gap-2 transition-colors"
           >
             <svg className="w-5 h-5 " fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -370,6 +388,49 @@ export default function Books() {
           )}
         </div>
       </div>
+
+      {/* Create Book Modal */}
+      {showCreateModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={handleCloseCreateModal}
+        >
+          <div
+            className="bg-[#0a1a2e] border border-[#2d3a4a] rounded-xl shadow-xl w-full max-w-md mx-4 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-xl font-bold text-white mb-4">Create New Book</h2>
+            <form onSubmit={handleCreateBookSubmit}>
+              <label className="block text-gray-400 text-sm mb-2">Book Title</label>
+              <input
+                type="text"
+                value={newBookTitle}
+                onChange={(e) => setNewBookTitle(e.target.value)}
+                placeholder="New Book Project"
+                autoFocus
+                className="w-full px-4 py-3 bg-[#1a2a3a] border border-[#3a4a5a] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#CDF056] focus:border-transparent"
+              />
+              <div className="flex gap-3 mt-6">
+                <button
+                  type="submit"
+                  disabled={isCreating}
+                  className="flex-1 px-4 py-2.5 bg-[#CDF056] text-[#0a1a2e] font-semibold rounded-lg hover:bg-[#b8d84a] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isCreating ? "Creating..." : "Create Book"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCloseCreateModal}
+                  disabled={isCreating}
+                  className="px-4 py-2.5 bg-[#2d3a4a] text-gray-400 rounded-lg hover:bg-[#3a4a5a] disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

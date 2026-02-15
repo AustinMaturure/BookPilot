@@ -10,7 +10,7 @@ import Placeholder from "@tiptap/extension-placeholder";
 import Highlight from "@tiptap/extension-highlight";
 import type { BookOutline } from "./position";
 import { useNotification } from "../contexts/NotificationContext";
-import { updateTalkingPoint, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, updateContentChangeStepJson, updateContentChangeComment, getCurrentUser, getCollaborationState, createTalkingPoint, createSection, reviewChapter, getGlossaryTerms, createGlossaryTerm, deleteGlossaryTerm, updateSpellingConvention, type CommentType, type Collaborator, type ContentChange, type GlossaryTerm } from "../utils/api";
+import { updateTalkingPoint, updateSection, updateChapter, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, updateContentChangeStepJson, updateContentChangeComment, getCurrentUser, getCollaborationState, createTalkingPoint, createSection, reviewChapter, getGlossaryTerms, createGlossaryTerm, deleteGlossaryTerm, updateSpellingConvention, type CommentType, type Collaborator, type ContentChange, type GlossaryTerm } from "../utils/api";
 import ChapterAssetsModal from "./ChapterAssetsModal";
 import ChapterAssetsPanel from "./ChapterAssetsPanel";
 import { CollaborationExtension } from "./CollaborationExtension";
@@ -1407,6 +1407,15 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [editingChangeCommentId, setEditingChangeCommentId] = useState<number | null>(null);
   const [editingChangeCommentText, setEditingChangeCommentText] = useState("");
   const [currentUserId, setCurrentUserId] = useState<number | null>((window as any).currentUserId ?? null);
+  // Inline edit state for section title and talking point text (double-tap to edit)
+  const [editingSectionId, setEditingSectionId] = useState<number | null>(null);
+  const [editingSectionTitleValue, setEditingSectionTitleValue] = useState("");
+  const [editingTpTextId, setEditingTpTextId] = useState<number | null>(null);
+  const [editingTpTextValue, setEditingTpTextValue] = useState("");
+  const [editingChapterId, setEditingChapterId] = useState<number | null>(null);
+  const [editingChapterTitleValue, setEditingChapterTitleValue] = useState("");
+  const sectionTitleEditStartedAtRef = useRef<number>(0);
+  const chapterTitleEditStartedAtRef = useRef<number>(0);
 
   useEffect(() => {
     getCurrentUser().then((result) => {
@@ -1947,6 +1956,81 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     // Content is sourced from canonical data; editor owns live state after mount
   };
 
+  const handleChapterTitleEditStart = (chapterId: number, currentTitle: string) => {
+    chapterTitleEditStartedAtRef.current = Date.now();
+    setEditingChapterId(chapterId);
+    setEditingChapterTitleValue(currentTitle);
+  };
+
+  const handleChapterTitleSave = async () => {
+    if (editingChapterId == null || !bookId || !onOutlineUpdate) return;
+    if (Date.now() - chapterTitleEditStartedAtRef.current < 200) return;
+    const trimmed = editingChapterTitleValue.replace(/\s+/g, ' ').trim();
+    if (!trimmed) {
+      setEditingChapterId(null);
+      return;
+    }
+    const chapterIdToUpdate = editingChapterId;
+    const res = await updateChapter(chapterIdToUpdate, { title: trimmed });
+    if (res.success) {
+      const updatedBook = await fetchBook(bookId);
+      if (updatedBook.success) onOutlineUpdate(updatedBook.data);
+      setEditingChapterId(null);
+    } else {
+      setEditingChapterId(null);
+      notification.error(res.error || "Failed to update chapter title");
+    }
+  };
+
+  const handleSectionTitleEditStart = (sectionId: number, currentTitle: string) => {
+    sectionTitleEditStartedAtRef.current = Date.now();
+    setEditingSectionId(sectionId);
+    setEditingSectionTitleValue(currentTitle);
+  };
+
+  const handleSectionTitleSave = async () => {
+    if (editingSectionId == null || !bookId || !onOutlineUpdate) return;
+    // Skip save if blur happened too quickly (e.g. React Strict Mode unmount/remount)
+    if (Date.now() - sectionTitleEditStartedAtRef.current < 200) return;
+    const trimmed = editingSectionTitleValue.trim();
+    if (!trimmed) {
+      setEditingSectionId(null);
+      return;
+    }
+    const sectionIdToUpdate = editingSectionId;
+    const res = await updateSection(sectionIdToUpdate, { title: trimmed });
+    if (res.success) {
+      const updatedBook = await fetchBook(bookId);
+      if (updatedBook.success) {
+        onOutlineUpdate(updatedBook.data);
+        if (selectedItem?.sectionId === sectionIdToUpdate) {
+          setSelectedItem((prev) => prev ? { ...prev, sectionTitle: trimmed } : prev);
+        }
+      }
+      setEditingSectionId(null);
+    } else {
+      setEditingSectionId(null);
+      notification.error(res.error || "Failed to update section title");
+    }
+  };
+
+  const handleTpTextEditStart = (tpId: number, currentText: string) => {
+    setEditingTpTextId(tpId);
+    setEditingTpTextValue(currentText || "");
+  };
+
+  const handleTpTextSave = async () => {
+    if (editingTpTextId == null || !bookId || !onOutlineUpdate) return;
+    const trimmed = editingTpTextValue.trim();
+    const res = await updateTalkingPoint(editingTpTextId, { text: trimmed || `Talking Point` });
+    setEditingTpTextId(null);
+    if (res.success) {
+      const updatedBook = await fetchBook(bookId);
+      if (updatedBook.success) onOutlineUpdate(updatedBook.data);
+    } else {
+      notification.error(res.error || "Failed to update talking point");
+    }
+  };
 
   // Strip change indicator spans from HTML before saving
   const stripChangeIndicators = (html: string): string => {
@@ -2797,7 +2881,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     setChatInput(e.target.value);
 
     if (isListening) {
-      SpeechRecognition.stopListening();
+      SpeechRecognition.abortListening();
       setIsListening(false);
     }
   };
@@ -2915,6 +2999,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   };
 
   const handleSendChatMessage = async (applyChanges = false) => {
+    SpeechRecognition.abortListening();
     // Use the currently visible talking point if no specific one is set
     const activeTpId = currentTalkingPointId || (selectedSection?.talking_points?.[0]?.id ?? null);
     if (!chatInput.trim() || !bookId || !activeTpId || isChatLoading) return;
@@ -3527,7 +3612,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           [chapterId]: !prev[chapterId],
                         }))
                       }
-                      className="flex-1 text-left px-3 py-2 text-sm font-semibold text-white hover:bg-[#011b2d]/50 rounded flex items-center gap-2"
+                      className="shrink-0 p-1 text-white hover:bg-[#011b2d]/50 rounded"
+                      title="Expand/collapse"
                     >
                       <svg
                         className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""}`}
@@ -3537,8 +3623,42 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                       >
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                       </svg>
-                      <span> {chapter.title}</span>
                     </button>
+                    {editingChapterId === chapterId && (isBookOwner || collaboratorRole === "editor") ? (
+                      <textarea
+                        value={editingChapterTitleValue}
+                        onChange={(e) => setEditingChapterTitleValue(e.target.value)}
+                        onBlur={handleChapterTitleSave}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleChapterTitleSave();
+                          }
+                          if (e.key === "Escape") {
+                            setEditingChapterId(null);
+                            setEditingChapterTitleValue(chapter.title || "");
+                          }
+                          e.stopPropagation();
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        autoFocus
+                        rows={Math.max(2, Math.min(6, Math.ceil((editingChapterTitleValue.length || 1) / 28) + 1))}
+                        className="flex-1 min-w-0 w-full px-2 py-1.5 text-sm font-semibold text-white bg-white/10 border border-white/30 rounded focus:outline-none focus:ring-1 focus:ring-[#CDF056] break-words resize-none overflow-y-auto leading-snug"
+                      />
+                    ) : (
+                      <span
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (isBookOwner || collaboratorRole === "editor") {
+                            handleChapterTitleEditStart(chapterId, chapter.title || "");
+                          }
+                        }}
+                        className={`flex-1 min-w-0 min-h-[2rem] px-2 py-1.5 text-sm font-semibold text-white hover:bg-[#011b2d]/50 rounded break-words select-none ${(isBookOwner || collaboratorRole === "editor") ? "cursor-text" : ""}`}
+                        title={(isBookOwner || collaboratorRole === "editor") ? "Click to edit" : ""}
+                      >
+                        {chapter.title}
+                      </span>
+                    )}
                     {chapterId > 0 && (
                       <button
                         onClick={(e) => {
@@ -3570,16 +3690,20 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                           selectedItem.chapterId === chapterId;
 
                         return (
-                          <button
+                          <div
                             key={sectionId}
-                            onClick={() => handleSectionClick(chapterId, sectionId, section.title)}
-                            className={`w-full text-left px-3 py-2 text-sm text-white/70 hover:bg-[#CDF056]/5  flex items-center gap-2 ${isSelected ? "bg-[#CDF056]/10 border-l-2 border-[#CDF056]" : ""
+                            className={`w-full text-left px-3 py-2 text-sm text-white/70 hover:bg-[#CDF056]/5 flex items-center gap-2 ${isSelected ? "bg-[#CDF056]/10 border-l-2 border-[#CDF056]" : ""
                               }`}
                           >
-                            <span className="text-xs text-gray-500">{si + 1}</span>
-                            <span className="flex-1 truncate">{section.title}</span>
-
-                          </button>
+                            <span className="text-xs text-gray-500 shrink-0">{si + 1}</span>
+                            <button
+                              onClick={() => handleSectionClick(chapterId, sectionId, section.title)}
+                              className="flex-1 min-w-0 text-left truncate select-none bg-transparent border-none p-0 cursor-pointer text-inherit hover:bg-transparent"
+                              title="Click to select"
+                            >
+                              {section.title}
+                            </button>
+                          </div>
                         );
                       })}
                     </div>
@@ -3600,7 +3724,37 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             {/* Editor Header */}
             <div className="border-b border-gray-200 px-6 py-4 bg-white shrink-0">
               <div className="flex items-center justify-between gap-3">
-                <h2 className="text-2xl font-bold text-gray-900 truncate">{selectedSection.title}</h2>
+                {editingSectionId === selectedSection.id ? (
+                  <input
+                    value={editingSectionTitleValue}
+                    onChange={(e) => setEditingSectionTitleValue(e.target.value)}
+                    onBlur={handleSectionTitleSave}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleSectionTitleSave();
+                      }
+                      if (e.key === "Escape") {
+                        setEditingSectionId(null);
+                        setEditingSectionTitleValue(selectedSection.title || "");
+                      }
+                    }}
+                    autoFocus
+                    className="flex-1 min-w-0 text-2xl font-bold text-gray-900 px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-[#CDF056] focus:border-[#CDF056]"
+                  />
+                ) : (
+                  <h2
+                    onClick={() => {
+                      if (isBookOwner || collaboratorRole === "editor") {
+                        handleSectionTitleEditStart(selectedSection.id!, selectedSection.title || "");
+                      }
+                    }}
+                    className={`flex-1 min-w-0 text-2xl font-bold text-gray-900 truncate ${(isBookOwner || collaboratorRole === "editor") ? "cursor-text hover:bg-gray-50 rounded px-1 -mx-1 select-none" : ""}`}
+                    title={(isBookOwner || collaboratorRole === "editor") ? "Click to edit" : ""}
+                  >
+                    {selectedSection.title}
+                  </h2>
+                )}
                 <div className="flex items-center gap-1 p-0.5 bg-gray-100 rounded-lg shrink-0">
                   <button
                     onClick={() => {
@@ -3723,7 +3877,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               disabled={isGenerating || !tp.text || (!isBookOwner && collaboratorRole !== "editor")}
                               className={`px-3 py-1.5 text-sm rounded-lg flex items-center gap-2 ${!isBookOwner && collaboratorRole !== "editor"
                                 ? "bg-gray-300 text-gray-500 cursor-not-allowed opacity-50"
-                                : "bg-[#CDF056] text-white  hover:bg-[#CDF056]/70 disabled:opacity-50 disabled:cursor-not-allowed"
+                                : "bg-[#CDF056] text-black  hover:bg-[#CDF056]/70 disabled:opacity-50 disabled:cursor-not-allowed"
                                 }`}
                               title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can generate text" : "Generate Text"}
                             >
@@ -3748,7 +3902,39 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                         </div>
 
                         <div className="mb-4">
-                          <div className="text-gray-900 font-semibold" data-tp-id={tpId}>{tp.text || `Talking Point ${ti + 1}`}</div>
+                          {editingTpTextId === tpId && (isBookOwner || collaboratorRole === "editor") ? (
+                            <input
+                              value={editingTpTextValue}
+                              onChange={(e) => setEditingTpTextValue(e.target.value)}
+                              onBlur={handleTpTextSave}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  handleTpTextSave();
+                                }
+                                if (e.key === "Escape") {
+                                  setEditingTpTextId(null);
+                                  setEditingTpTextValue(tp.text || `Talking Point ${ti + 1}`);
+                                }
+                              }}
+                              autoFocus
+                              className="w-full text-gray-900 font-semibold px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-[#CDF056] focus:border-[#CDF056]"
+                              data-tp-id={tpId}
+                            />
+                          ) : (
+                            <div
+                              onClick={() => {
+                                if (isBookOwner || collaboratorRole === "editor") {
+                                  handleTpTextEditStart(tpId, tp.text || `Talking Point ${ti + 1}`);
+                                }
+                              }}
+                              className={`text-gray-900 font-semibold ${(isBookOwner || collaboratorRole === "editor") ? "cursor-text hover:bg-gray-50 rounded px-1 -mx-1" : ""}`}
+                              data-tp-id={tpId}
+                              title={(isBookOwner || collaboratorRole === "editor") ? "Click to edit" : ""}
+                            >
+                              {tp.text || `Talking Point ${ti + 1}`}
+                            </div>
+                          )}
                         </div>
 
                         <div className="relative">
@@ -4029,7 +4215,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     <button
                       onClick={handleAddComment}
                       disabled={!newCommentText.trim() || isAddingComment}
-                      className="mt-2 px-4 py-1.5 bg-[#CDF056] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                      className="mt-2 px-4 py-1.5 bg-[#CDF056] text-white rounded-lg  disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                     >
                       {isAddingComment ? "Adding..." : "Add Comment"}
                     </button>
@@ -4342,7 +4528,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                               disabled={!isOldestPending}
                               className={`flex-1 px-3 py-1.5 rounded text-sm ${!isOldestPending
                                 ? "bg-gray-500 text-gray-300 cursor-not-allowed"
-                                : "bg-green-600 text-white hover:bg-green-700"
+                                : "bg-[#CDF056] text-white hover:bg-[#CDF056]/70"
                                 }`}
                               title={!isOldestPending ? "Approve earlier changes first" : "Approve"}
                             >
@@ -5336,8 +5522,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
               </svg>
             ) : (
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.3482396,15.9535197 C18.7664592,15.0561341 19,14.0553403 19,13 C19,9.13400675 15.8659932,6 12,6 C8.13400675,6 5,9.13400675 5,13 C5,14.1167756 5.2615228,15.1724692 5.72666673,16.1091793 L5.72666673,16.1091793 M12,3 C12.5522847,3 13,2.55228475 13,2 C13,1.44771525 12.5522847,1 12,1 C11.4477153,1 11,1.44771525 11,2 C11,2.55228475 11.4477153,3 12,3 Z M12,23 C12.5522847,23 13,22.5522847 13,22 C13,21.4477153 12.5522847,21 12,21 C11.4477153,21 11,21.4477153 11,22 C11,22.5522847 11.4477153,23 12,23 Z M12,6 L12,3 M9,14 C9.55228475,14 10,13.5522847 10,13 C10,12.4477153 9.55228475,12 9,12 C8.44771525,12 8,12.4477153 8,13 C8,13.5522847 8.44771525,14 9,14 Z M15,14 C15.5522847,14 16,13.5522847 16,13 C16,12.4477153 15.5522847,12 15,12 C14.4477153,12 14,12.4477153 14,13 C14,13.5522847 14.4477153,14 15,14 Z M6,18.9876876 L5,16 C5,16 5.07242747,15.2283988 5.5,15.5 C6.43069361,16.0911921 8.57396448,17 12,17 C15.5536669,17 17.6181635,16.0844828 18.5,15.5 C18.8589052,15.262117 19,16 19,16 L18,18.9876876 C18,18.9876876 17.0049249,20.9999997 12,21 C6.99507512,21.0000003 6,18.9876876 6,18.9876876 Z" />
               </svg>
             )}
           </button>

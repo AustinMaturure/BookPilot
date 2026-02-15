@@ -43,7 +43,9 @@ const SpeechToText = ({ onTranscript, onListeningChange, onError }: Props) => {
 
   const toggleListening = async () => {
     if (listening) {
-      SpeechRecognition.stopListening();
+      // Use abortListening instead of stopListening - abort() is more reliable in production
+      // where stop() can hang waiting for the Web Speech API's onend event
+      SpeechRecognition.abortListening();
     } else {
       resetTranscript();
       lastFinalRef.current = '';

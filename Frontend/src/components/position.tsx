@@ -274,7 +274,7 @@ export default function Position({
   };
 
   const sendMessage = async () => {
-    SpeechRecognition.stopListening();
+    SpeechRecognition.abortListening();
 
     const trimmed = userMessage.trim();
     if (!trimmed || isSending || !activePillar) return;
@@ -445,7 +445,7 @@ export default function Position({
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setUserMessage(e.target.value);
     if (isListening) {
-      SpeechRecognition.stopListening();
+      SpeechRecognition.abortListening();
       setIsListening(false);
     }
   };
