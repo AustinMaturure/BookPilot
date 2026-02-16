@@ -25,7 +25,78 @@ import { useNotification } from "../contexts/NotificationContext";
 type TalkingPoint = { id?: number; text: string; order?: number; content?: string };
 type Section = { id?: number; title: string; order?: number; talking_points: TalkingPoint[] };
 type Chapter = { id?: number; title: string; order?: number; sections: Section[] };
-export type BookOutline = { id?: number; title: string; chapters: Chapter[] };
+export type Part = { id?: number; title: string; order?: number; chapters: Chapter[] };
+export type BookOutline = { id?: number; title: string; parts?: Part[]; chapters: Chapter[] };
+
+/** Flattened chapters from parts or chapters (for backward compatibility). */
+export function getAllChapters(outline: BookOutline | null): Chapter[] {
+  if (!outline) return [];
+  if (outline.parts && outline.parts.length > 0) {
+    return outline.parts.flatMap((p) => p.chapters || []);
+  }
+  return outline.chapters || [];
+}
+
+/** Update a chapter in the outline, preserving parts structure. */
+export function updateOutlineChapter(
+  outline: BookOutline,
+  chapterId: number,
+  updater: (ch: any) => any
+): BookOutline {
+  if (outline.parts && outline.parts.length > 0) {
+    return {
+      ...outline,
+      parts: outline.parts.map((part) => ({
+        ...part,
+        chapters: (part.chapters || []).map((ch) => (ch.id === chapterId ? updater(ch) : ch)),
+      })),
+    };
+  }
+  return {
+    ...outline,
+    chapters: (outline.chapters || []).map((ch) => (ch.id === chapterId ? updater(ch) : ch)),
+  };
+}
+
+/** Update a part in the outline. */
+export function updateOutlinePart(
+  outline: BookOutline,
+  partId: number,
+  updater: (p: any) => any
+): BookOutline {
+  if (!outline.parts || outline.parts.length === 0) return outline;
+  return {
+    ...outline,
+    parts: outline.parts.map((p) => (p.id === partId ? updater(p) : p)),
+  };
+}
+
+/** Update a section in the outline, preserving parts structure. */
+export function updateOutlineSection(
+  outline: BookOutline,
+  sectionId: number,
+  updater: (sec: any) => any
+): BookOutline {
+  if (outline.parts && outline.parts.length > 0) {
+    return {
+      ...outline,
+      parts: outline.parts.map((part) => ({
+        ...part,
+        chapters: (part.chapters || []).map((ch) => ({
+          ...ch,
+          sections: (ch.sections || []).map((sec) => (sec.id === sectionId ? updater(sec) : sec)),
+        })),
+      })),
+    };
+  }
+  return {
+    ...outline,
+    chapters: (outline.chapters || []).map((ch) => ({
+      ...ch,
+      sections: (ch.sections || []).map((sec) => (sec.id === sectionId ? updater(sec) : sec)),
+    })),
+  };
+}
 
 type PositionProps = {
   initialOutline?: BookOutline | null;

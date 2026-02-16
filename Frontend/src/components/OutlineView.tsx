@@ -13,6 +13,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  createPart,
+  updatePart,
   createChapter,
   updateChapter,
   deleteChapter,
@@ -24,6 +26,7 @@ import {
   deleteTalkingPoint,
 } from "../utils/api";
 import type { BookOutline } from "./position";
+import { getAllChapters } from "./position";
 import background2 from "../assets/Branding/Log_in_background.png";
 
 type OutlineViewProps = {
@@ -150,7 +153,7 @@ function SortableChapter({
 
         {/* Part Label */}
         <span className="px-3 py-1 bg-gray-100 text-gray-700 text-xs font-semibold rounded-sm">
-          PART {index + 1}
+          CHAPTER {index + 1}
         </span>
 
         {/* Chapter Title */}
@@ -177,7 +180,7 @@ function SortableChapter({
             onClick={onAddSection}
             className="px-3 py-1 text-sm text-gray-400 hover:bg-[#CDF056]/10 rounded-lg font-medium"
           >
-            + Chapter
+            + Section
           </button>
           {chapterId > 0 && (
             <button onClick={onDeleteChapter} className="text-gray-400 hover:text-red-500">
@@ -221,14 +224,7 @@ function SortableChapter({
               />
             ))}
           </SortableContext>
-          {chapterId > 0 && (
-            <button
-              onClick={onAddSection}
-              className="text-sm text-[#CDF056] hover:underline"
-            >
-              + Section
-            </button>
-          )}
+         
         </div>
       )}
     </div>
@@ -318,7 +314,7 @@ function SortableSection({
 
         {/* CH Badge */}
         <span className="px-2 py-1 bg-[#CDF056]/20 text-gray-700 text-xs font-semibold rounded-full">
-          CH {sectionIndex + 1}
+          SECTION {sectionIndex + 1}
         </span>
 
         {/* Section Title */}
@@ -471,9 +467,11 @@ export default function OutlineView({
   const [localOutline, setLocalOutline] = useState<BookOutline | null>(outline);
   const [expandedChapters, setExpandedChapters] = useState<Record<number, boolean>>({});
   const [expandedSections, setExpandedSections] = useState<Record<number, boolean>>({});
+  const [editingPartId, setEditingPartId] = useState<number | null>(null);
   const [editingChapterId, setEditingChapterId] = useState<number | null>(null);
   const [editingSectionId, setEditingSectionId] = useState<number | null>(null);
   const [editingTpId, setEditingTpId] = useState<number | null>(null);
+  const [partTitles, setPartTitles] = useState<Record<number, string>>({});
   const [chapterTitles, setChapterTitles] = useState<Record<number, string>>({});
   const [sectionTitles, setSectionTitles] = useState<Record<number, string>>({});
   const [tpTexts, setTpTexts] = useState<Record<number, string>>({});
@@ -492,19 +490,42 @@ export default function OutlineView({
     );
   }
 
-  const handleAddChapter = async () => {
-    const defaultTitle = "New Chapter";
-    const currentChapterCount = localOutline?.chapters?.length || 0;
-    const res = await createChapter(bookId, { title: defaultTitle });
+  const handleAddPart = async () => {
+    const res = await createPart(bookId, {});
     if (res.success && res.data) {
       setLocalOutline(res.data);
       if (onOutlineUpdate) {
         onOutlineUpdate(res.data);
       }
-      const chapters = res.data.chapters || [];
+    }
+  };
+
+  const handleRenamePart = async (partId: number, title: string) => {
+    const res = await updatePart(partId, { title });
+    if (res.success && res.data) {
+      setLocalOutline(res.data);
+      if (onOutlineUpdate) {
+        onOutlineUpdate(res.data);
+      }
+    }
+  };
+
+  const handleAddChapter = async (partId?: number) => {
+    const defaultTitle = "New Chapter";
+    const currentChapterCount = getAllChapters(localOutline).length;
+    const res = await createChapter(bookId, {
+      title: defaultTitle,
+      ...(partId && { part: partId }),
+    });
+    if (res.success && res.data) {
+      setLocalOutline(res.data);
+      if (onOutlineUpdate) {
+        onOutlineUpdate(res.data);
+      }
+      const chapters = getAllChapters(res.data);
       const newChapter = chapters.length > currentChapterCount 
-        ? chapters[chapters.length - 1] 
-        : chapters.find((ch: any) => ch.title === defaultTitle);
+        ? chapters[chapters.length - 1]
+        : chapters.find((ch: { title?: string }) => ch.title === defaultTitle);
       if (newChapter?.id) {
         setChapterTitles((prev) => ({
           ...prev,
@@ -550,7 +571,7 @@ export default function OutlineView({
       if (onOutlineUpdate) {
         onOutlineUpdate(res.data);
       }
-      const chapter = res.data.chapters?.find((ch: any) => ch.id === chapterId);
+      const chapter = getAllChapters(res.data).find((ch) => ch.id === chapterId);
       const sections = chapter?.sections || [];
       const newSection = sections.length > currentSectionCount
         ? sections[sections.length - 1]
@@ -608,8 +629,8 @@ export default function OutlineView({
       if (onOutlineUpdate) {
         onOutlineUpdate(res.data);
       }
-      const chapter = res.data.chapters?.find((ch: any) => 
-        ch.sections?.some((sec: any) => sec.id === sectionId)
+      const chapter = getAllChapters(res.data).find((ch) =>
+        ch.sections?.some((sec) => sec.id === sectionId)
       );
       const section = chapter?.sections?.find((sec: any) => sec.id === sectionId);
       const talkingPoints = section?.talking_points || [];
@@ -658,12 +679,11 @@ export default function OutlineView({
   };
 
   const toggleExpandAll = () => {
-    if (!localOutline?.chapters) return;
-    const allExpanded = localOutline.chapters.every(
-      (ch) => expandedChapters[ch.id ?? -1]
-    );
+    const chs = getAllChapters(localOutline);
+    if (!chs.length) return;
+    const allExpanded = chs.every((ch) => expandedChapters[ch.id ?? -1]);
     const newState: Record<number, boolean> = {};
-    localOutline.chapters.forEach((ch) => {
+    chs.forEach((ch) => {
       if (ch.id) newState[ch.id] = !allExpanded;
     });
     setExpandedChapters(newState);
@@ -681,7 +701,7 @@ export default function OutlineView({
 
     // Reorder chapters
     if (isChapter(activeId) && isChapter(overId)) {
-      const chapters = localOutline?.chapters || [];
+      const chapters = getAllChapters(localOutline);
       const oldIndex = chapters.findIndex((c) => getItemId("chapter", c.id ?? -1) === activeId);
       const newIndex = chapters.findIndex((c) => getItemId("chapter", c.id ?? -1) === overId);
 
@@ -892,7 +912,10 @@ export default function OutlineView({
     setActiveId(event.active.id as string);
   };
 
-  const chapters = localOutline.chapters || [];
+  const chapters = getAllChapters(localOutline);
+  const parts = localOutline.parts?.length
+    ? localOutline.parts
+    : [{ id: 0, title: "Part 1", order: 1, chapters: localOutline.chapters || [] }];
   const activeItem = activeId
     ? (() => {
         if (isChapter(activeId)) {
@@ -951,7 +974,72 @@ export default function OutlineView({
             strategy={verticalListSortingStrategy}
           >
             <div className="space-y-3 p-4 pt-0">
-              {chapters.map((chapter, ci) => {
+              {parts.map((part) => (
+                <div key={part.id ?? part.order} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 bg-gray-50/50">
+                    {editingPartId === (part.id ?? -1) && part.id && part.id > 0 ? (
+                      <input
+                        value={partTitles[part.id ?? -1] ?? part.title}
+                        onChange={(e) =>
+                          setPartTitles((prev) => ({
+                            ...prev,
+                            [part.id ?? -1]: e.target.value,
+                          }))
+                        }
+                        onBlur={() => {
+                          const title = partTitles[part.id ?? -1] ?? part.title;
+                          if (part.id && part.id > 0) {
+                            handleRenamePart(part.id, title.trim() || part.title || "");
+                          }
+                          setEditingPartId(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            const title = partTitles[part.id ?? -1] ?? part.title;
+                            if (part.id && part.id > 0) {
+                              handleRenamePart(part.id, title.trim() || part.title || "");
+                            }
+                            setEditingPartId(null);
+                          }
+                          if (e.key === "Escape") {
+                            setPartTitles((prev) => ({ ...prev, [part.id ?? -1]: part.title || "" }));
+                            setEditingPartId(null);
+                          }
+                        }}
+                        autoFocus
+                        className="flex-1 min-w-0 text-lg font-semibold text-gray-800 px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-[#CDF056] focus:border-[#CDF056]"
+                      />
+                    ) : (
+                      <h3
+                        onClick={() => {
+                          if (part.id && part.id > 0) {
+                            setPartTitles((prev) => ({
+                              ...prev,
+                              [part.id!]: part.title || "",
+                            }));
+                            setEditingPartId(part.id);
+                          }
+                        }}
+                        className={`flex-1 min-w-0 text-lg font-semibold text-gray-800 rounded px-1 -mx-1 py-0.5 select-none ${part.id && part.id > 0 ? "cursor-text hover:bg-gray-100/50" : ""}`}
+                      >
+                        {part.title || `Part ${part.order ?? 1}`}
+                      </h3>
+                    )}
+                    {part.id && part.id > 0 && (
+                      <button
+                        onClick={() => handleAddChapter(part.id!)}
+                        className="shrink-0 px-2 py-1 text-sm text-gray-500 hover:text-[#CDF056] hover:bg-[#CDF056]/10 rounded transition-colors flex items-center gap-2"
+                        title="Add chapter to this part"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /> 
+                        </svg>
+                        <h2 className="text-sm font-medium text-gray-500">Chapter</h2>
+                      </button>
+                    )}
+                  </div>
+                  <div className="p-4 space-y-3">
+                  {(part.chapters || []).map((chapter, ci) => {
                 const chapterId = chapter.id ?? -1;
                 return (
                   <SortableChapter
@@ -1108,17 +1196,21 @@ export default function OutlineView({
                   />
                 );
               })}
+                  </div>
+                </div>
+              ))}
+
 
               {/* Add New Part Button */}
               <button
-                onClick={handleAddChapter}
+                onClick={handleAddPart}
                 className="w-full bg-white border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-[#CDF056] hover:bg-[#CDF056]/5 transition-colors"
               >
                 <div className="flex items-center justify-center gap-2 text-[#CDF056] font-medium">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                   </svg>
-                  <span>Add New Part</span>
+                  <span>Add Part</span>
                 </div>
               </button>
             </div>

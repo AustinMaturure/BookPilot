@@ -263,7 +263,37 @@ export async function deleteBook(id: number) {
   }
 }
 
-export async function createChapter(bookId: number, data: { title: string; order?: number }) {
+export async function createPart(bookId: number, data: { title?: string; order?: number } = {}) {
+  try {
+    const response = await api.post(`pilot/api/books/${bookId}/parts/`, data);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function updatePart(
+  partId: number,
+  data: { title?: string; order?: number }
+) {
+  try {
+    const response = await api.patch(`pilot/api/parts/${partId}/`, data);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function createChapter(
+  bookId: number,
+  data: { title: string; order?: number; part?: number }
+) {
   try {
     const response = await api.post(`pilot/api/books/${bookId}/chapters/`, data);
     return { success: true, status: response.status, data: response.data };
@@ -1101,6 +1131,31 @@ export async function getPositioningBrief(book_id: number) {
 export async function reviewChapter(chapter_id: number) {
   try {
     const response = await api.post(`pilot/api/chapters/${chapter_id}/review/`);
+    return { success: true, status: response.status, data: response.data };
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      return {
+        success: false,
+        error: err.response.data?.detail || err.message,
+        data: err.response.data,
+      };
+    }
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    }
+    return { success: false, error: "Unknown error" };
+  }
+}
+
+export async function generateChatSuggestions(talking_point_id: number, chat_messages: Array<{ from: "user" | "ai"; text: string; highlightedText?: string }>) {
+  try {
+    const response = await api.post(`pilot/api/talking_points/${talking_point_id}/generate-suggestions/`, {
+      chat_messages: chat_messages.map((m) => ({
+        from: m.from,
+        text: m.text,
+        highlighted_text: m.highlightedText,
+      })),
+    });
     return { success: true, status: response.status, data: response.data };
   } catch (err: unknown) {
     if (axios.isAxiosError(err) && err.response) {

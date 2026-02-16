@@ -9,8 +9,9 @@ import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import Highlight from "@tiptap/extension-highlight";
 import type { BookOutline } from "./position";
+import { getAllChapters, updateOutlineChapter, updateOutlineSection, updateOutlinePart } from "./position";
 import { useNotification } from "../contexts/NotificationContext";
-import { updateTalkingPoint, updateSection, updateChapter, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, updateContentChangeStepJson, updateContentChangeComment, getCurrentUser, getCollaborationState, createTalkingPoint, createSection, reviewChapter, getGlossaryTerms, createGlossaryTerm, deleteGlossaryTerm, updateSpellingConvention, type CommentType, type Collaborator, type ContentChange, type GlossaryTerm } from "../utils/api";
+import { updateTalkingPoint, updateSection, updateChapter, updatePart, fetchBook, generateTextFromTalkingPoint, chatWithChanges, getComments, createComment, deleteComment, quickTextAction, getBookCollaborators, inviteCollaborator, removeCollaborator, updateCollaboratorRole, getContentChanges, createContentChange, approveContentChange, rejectContentChange, deleteContentChange, updateContentChangeStepJson, updateContentChangeComment, getCurrentUser, getCollaborationState, createTalkingPoint, createSection, reviewChapter, generateChatSuggestions, getGlossaryTerms, createGlossaryTerm, deleteGlossaryTerm, updateSpellingConvention, type CommentType, type Collaborator, type ContentChange, type GlossaryTerm } from "../utils/api";
 import ChapterAssetsModal from "./ChapterAssetsModal";
 import ChapterAssetsPanel from "./ChapterAssetsPanel";
 import { CollaborationExtension } from "./CollaborationExtension";
@@ -267,6 +268,7 @@ type TiptapEditorProps = {
   content: string;
   onUpdate: (html: string) => void;
   onBlur: () => void;
+  onFocus?: () => void;
   placeholder?: string;
   onTextSelect?: (text: string, position: { x: number; y: number }, selectionRange?: { from: number; to: number }, selectedHtml?: string) => void;
   editorRef?: React.MutableRefObject<any>;
@@ -968,6 +970,7 @@ function TiptapEditor({
   content,
   onUpdate,
   onBlur,
+  onFocus,
   placeholder,
   onTextSelect,
   editorRef,
@@ -1131,6 +1134,10 @@ function TiptapEditor({
         return false;
       },
       handleDOMEvents: {
+        focus: () => {
+          if (onFocus && talkingPointId != null) onFocus();
+          return false;
+        },
         mouseup: (view) => {
           // Use a small delay to ensure browser selection is updated
           setTimeout(() => {
@@ -1490,6 +1497,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const notification = useNotification();
   const [selectedItem, setSelectedItem] = useState<SelectedItem>(null);
   const [generatingTpId, setGeneratingTpId] = useState<number | null>(null);
+  const [expandedParts, setExpandedParts] = useState<Record<number, boolean>>({});
   const [expandedChapters, setExpandedChapters] = useState<Record<number, boolean>>({});
   const [assetsModalOpen, setAssetsModalOpen] = useState(false);
   const [currentTalkingPointId, setCurrentTalkingPointId] = useState<number | null>(null);
@@ -1538,6 +1546,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   };
   
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
   const chatMessagesEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
   const [comments, setComments] = useState<CommentType[]>([]);
@@ -1549,6 +1558,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [isAddingReply, setIsAddingReply] = useState<Record<number, boolean>>({});
   const [expandedReplies, setExpandedReplies] = useState<Record<number, boolean>>({});
   const editorRefs = useRef<Record<number, any>>({});
+  const talkingPointsScrollRef = useRef<HTMLDivElement>(null);
+  const tpCardRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const [isApplyingQuickAction, setIsApplyingQuickAction] = useState(false);
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const [showCollaboratorModal, setShowCollaboratorModal] = useState(false);
@@ -1575,10 +1586,13 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const [editingSectionTitleValue, setEditingSectionTitleValue] = useState("");
   const [editingTpTextId, setEditingTpTextId] = useState<number | null>(null);
   const [editingTpTextValue, setEditingTpTextValue] = useState("");
+  const [editingPartId, setEditingPartId] = useState<number | null>(null);
+  const [editingPartTitleValue, setEditingPartTitleValue] = useState("");
   const [editingChapterId, setEditingChapterId] = useState<number | null>(null);
   const [editingChapterTitleValue, setEditingChapterTitleValue] = useState("");
   const sectionTitleEditStartedAtRef = useRef<number>(0);
   const chapterTitleEditStartedAtRef = useRef<number>(0);
+  const partTitleEditStartedAtRef = useRef<number>(0);
   // Collaborator "Create Edit" modal: select text → edit in rich editor → suggest
   const [createEditModalOpen, setCreateEditModalOpen] = useState(false);
   const [createEditInitialContent, setCreateEditInitialContent] = useState<string>("");
@@ -1843,7 +1857,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   }, [selectedText, selectionPosition]);
 
   useEffect(() => {
-    if (outline && outline.chapters && outline.chapters.length > 0) {
+    if (outline && getAllChapters(outline) && getAllChapters(outline).length > 0) {
       // Only auto-select first section if no section is currently selected
       if (!selectedItem) {
         // Try to restore from localStorage (persist across refresh)
@@ -1856,7 +1870,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               if (parsed.chapterId != null && parsed.sectionId != null) {
                 const chId = parsed.chapterId;
                 const secId = parsed.sectionId;
-                const chapter = outline.chapters?.find((ch) => ch.id === chId);
+                const chapter = getAllChapters(outline)?.find((ch) => ch.id === chId);
                 const section = chapter?.sections?.find((sec) => sec.id === secId);
                 if (chapter && section) {
                   setExpandedChapters((prev) => ({ ...prev, [chId]: true }));
@@ -1875,7 +1889,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
           } catch (_) {}
         }
         if (!restored) {
-          const firstChapter = outline.chapters[0];
+          const firstChapter = getAllChapters(outline)[0];
           if (firstChapter?.id && firstChapter.sections && firstChapter.sections.length > 0) {
             setExpandedChapters({ [firstChapter.id]: true });
             const firstSection = firstChapter.sections[0];
@@ -1891,7 +1905,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
         }
       } else {
         // Preserve selected section when outline updates
-        const chapter = outline.chapters?.find((ch) => ch.id === selectedItem.chapterId);
+        const chapter = getAllChapters(outline)?.find((ch) => ch.id === selectedItem.chapterId);
         const section = chapter?.sections?.find((sec) => sec.id === selectedItem.sectionId);
         if (section) {
           // Update section title if it changed
@@ -1933,7 +1947,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     const tpId = urlParams.get("tp");
 
     if (chapterId && sectionId && outline && !selectedItem) {
-      const chapter = outline.chapters?.find(c => c.id === parseInt(chapterId));
+      const chapter = getAllChapters(outline)?.find(c => c.id === parseInt(chapterId));
       const section = chapter?.sections?.find(s => s.id === parseInt(sectionId));
 
       if (section) {
@@ -1982,10 +1996,60 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
 
   // Get selected section
   const selectedSection = selectedItem
-    ? outline?.chapters
-      ?.find((ch) => ch.id === selectedItem.chapterId)
-      ?.sections?.find((sec) => sec.id === selectedItem.sectionId)
+    ? getAllChapters(outline)
+        ?.find((ch) => ch.id === selectedItem.chapterId)
+        ?.sections?.find((sec) => sec.id === selectedItem.sectionId)
     : null;
+
+  // Update currentTalkingPointId based on which talking point is in view (for chat "About:")
+  useEffect(() => {
+    const scrollEl = talkingPointsScrollRef.current;
+    const talkingPoints = selectedSection?.talking_points ?? [];
+    if (!scrollEl || talkingPoints.length === 0) return;
+
+    const tpIds = talkingPoints.map((tp) => tp.id).filter((id): id is number => id != null && id > 0);
+    if (tpIds.length === 0) return;
+
+    const visibilityMap = new Map<number, number>();
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const tpId = parseInt(entry.target.getAttribute("data-tp-id") || "", 10);
+          if (!tpId) continue;
+          visibilityMap.set(tpId, entry.isIntersecting ? entry.intersectionRatio : 0);
+        }
+        // Pick the TP with highest visibility; tie-break by document order (topmost)
+        let bestId: number | null = null;
+        let bestRatio = 0;
+        for (const id of tpIds) {
+          const ratio = visibilityMap.get(id) ?? 0;
+          if (ratio > bestRatio || (ratio === bestRatio && ratio > 0 && (bestId == null || tpIds.indexOf(id) < tpIds.indexOf(bestId!)))) {
+            bestRatio = ratio;
+            bestId = id;
+          }
+        }
+        if (bestId != null && bestRatio > 0.1) {
+          setCurrentTalkingPointId(bestId);
+        }
+      },
+      { root: scrollEl, threshold: [0, 0.1, 0.25, 0.5, 0.75, 1], rootMargin: "-10% 0px -10% 0px" }
+    );
+
+    // Observe after refs are attached (next tick)
+    const timer = setTimeout(() => {
+      for (const id of tpIds) {
+        const el = tpCardRefs.current[id];
+        if (el) observer.observe(el);
+      }
+    }, 50);
+
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+      for (const id of tpIds) tpCardRefs.current[id] = null;
+    };
+  }, [selectedSection?.id, selectedSection?.talking_points]);
 
   // Load comments when talking point changes
   useEffect(() => {
@@ -2185,6 +2249,40 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     // Content is sourced from canonical data; editor owns live state after mount
   };
 
+  const handlePartTitleEditStart = (partId: number, currentTitle: string) => {
+    partTitleEditStartedAtRef.current = Date.now();
+    setEditingPartId(partId);
+    setEditingPartTitleValue(currentTitle);
+  };
+
+  const handlePartTitleSave = async () => {
+    if (editingPartId == null || !bookId || !onOutlineUpdate || !outline) return;
+    if (Date.now() - partTitleEditStartedAtRef.current < 200) return;
+    const trimmed = editingPartTitleValue.replace(/\s+/g, " ").trim();
+    if (!trimmed) {
+      setEditingPartId(null);
+      return;
+    }
+    const partIdToUpdate = editingPartId;
+    const previousOutline = outline;
+    const optimisticOutline = updateOutlinePart(outline, partIdToUpdate, (p) => ({
+      ...p,
+      title: trimmed,
+    }));
+    setEditingPartId(null);
+    onOutlineUpdate(optimisticOutline);
+    try {
+      const res = await updatePart(partIdToUpdate, { title: trimmed });
+      if (!res.success) {
+        onOutlineUpdate(previousOutline);
+        notification.error(res.error || "Failed to update part title");
+      }
+    } catch {
+      onOutlineUpdate(previousOutline);
+      notification.error("Failed to update part title");
+    }
+  };
+
   const handleChapterTitleEditStart = (chapterId: number, currentTitle: string) => {
     chapterTitleEditStartedAtRef.current = Date.now();
     setEditingChapterId(chapterId);
@@ -2201,12 +2299,10 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     }
     const chapterIdToUpdate = editingChapterId;
     const previousOutline = outline;
-    const optimisticOutline = {
-      ...outline,
-      chapters: outline.chapters?.map((ch: any) =>
-        ch.id === chapterIdToUpdate ? { ...ch, title: trimmed } : ch
-      ) || [],
-    };
+    const optimisticOutline = updateOutlineChapter(outline, chapterIdToUpdate, (ch) => ({
+      ...ch,
+      title: trimmed,
+    }));
     setEditingChapterId(null);
     onOutlineUpdate(optimisticOutline);
     try {
@@ -2237,18 +2333,13 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     }
     const sectionIdToUpdate = editingSectionId;
     const previousOutline = outline;
-    const previousSectionTitle = outline.chapters
+    const previousSectionTitle = getAllChapters(outline)
       ?.flatMap((ch: any) => ch.sections || [])
       .find((sec: any) => sec.id === sectionIdToUpdate)?.title || "";
-    const optimisticOutline = {
-      ...outline,
-      chapters: outline.chapters?.map((ch: any) => ({
-        ...ch,
-        sections: (ch.sections || []).map((sec: any) =>
-          sec.id === sectionIdToUpdate ? { ...sec, title: trimmed } : sec
-        ),
-      })) || [],
-    };
+    const optimisticOutline = updateOutlineSection(outline, sectionIdToUpdate, (sec) => ({
+      ...sec,
+      title: trimmed,
+    }));
     setEditingSectionId(null);
     if (selectedItem?.sectionId === sectionIdToUpdate) {
       setSelectedItem((prev) => prev ? { ...prev, sectionTitle: trimmed } : prev);
@@ -2275,6 +2366,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const handleTpTextEditStart = (tpId: number, currentText: string) => {
     setEditingTpTextId(tpId);
     setEditingTpTextValue(currentText || "");
+    setCurrentTalkingPointId(tpId);
   };
 
   const handleTpTextSave = async () => {
@@ -2348,8 +2440,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       let targetChapterId: number | null = null;
       let targetSectionId: number | null = null;
       let targetSectionTitle: string | null = null;
-      if (outline?.chapters) {
-        for (const ch of outline.chapters) {
+      if (getAllChapters(outline).length > 0) {
+        for (const ch of getAllChapters(outline)) {
           for (const sec of ch.sections || []) {
             for (const tp of sec.talking_points || []) {
               if (tp.id === tpId) {
@@ -2387,8 +2479,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
     let targetChapterId: number | null = null;
     let targetSectionId: number | null = null;
     let targetSectionTitle: string | null = null;
-    if (outline?.chapters) {
-      for (const ch of outline.chapters) {
+    if (getAllChapters(outline).length > 0) {
+      for (const ch of getAllChapters(outline)) {
         for (const sec of ch.sections || []) {
           for (const tp of sec.talking_points || []) {
             if (tp.id === tpId) {
@@ -3280,7 +3372,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
   const handleGenerateTalkingPointsFromChapter = async (chapterId: number, assetIds: number[]) => {
     if (!bookId || !outline) return;
 
-    const chapter = outline.chapters?.find((ch) => ch.id === chapterId);
+    const chapter = getAllChapters(outline)?.find((ch) => ch.id === chapterId);
     if (!chapter) return;
 
     // Find the first section in the chapter (or create one if none exists)
@@ -3966,7 +4058,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
       {/* Left Sidebar - Contents/Outline OR Chapter Assets (contained in same column) */}
       <div className="mt-13 w-64 flex flex-col border-r border-gray-200 overflow-hidden shrink-0 bg-[#011b2d]">
         {assetsModalOpen && currentChapterId && bookId && outline ? (() => {
-          const chapter = outline.chapters?.find((ch) => ch.id === currentChapterId);
+          const chapter = getAllChapters(outline)?.find((ch) => ch.id === currentChapterId);
           return chapter ? (
             <ChapterAssetsPanel
               isOpen={assetsModalOpen}
@@ -3985,119 +4077,298 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             <h3 className="text-sm font-semibold text-gray-400 mb-4">CONTENTS</h3>
           <hr className="border-gray-400" />
           <div className="space-y-1">
-            {outline?.chapters?.map((chapter) => {
-              const chapterId = chapter.id ?? -1;
-              const isExpanded = expandedChapters[chapterId] ?? false;
-
-              return (
-                <div key={chapterId}>
-                  <div className="flex items-center gap-2 w-full">
-                    <button
-                      onClick={() =>
-                        setExpandedChapters((prev) => ({
-                          ...prev,
-                          [chapterId]: !prev[chapterId],
-                        }))
-                      }
-                      className="shrink-0 p-1 text-white hover:bg-[#011b2d]/50 rounded"
-                      title="Expand/collapse"
-                    >
-                      <svg
-                        className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                    </button>
-                    {editingChapterId === chapterId && (isBookOwner || collaboratorRole === "editor") ? (
-                      <textarea
-                        value={editingChapterTitleValue}
-                        onChange={(e) => setEditingChapterTitleValue(e.target.value)}
-                        onBlur={handleChapterTitleSave}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            handleChapterTitleSave();
-                          }
-                          if (e.key === "Escape") {
-                            setEditingChapterId(null);
-                            setEditingChapterTitleValue(chapter.title || "");
-                          }
-                          e.stopPropagation();
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                        autoFocus
-                        rows={Math.max(2, Math.min(6, Math.ceil((editingChapterTitleValue.length || 1) / 28) + 1))}
-                        className="flex-1 min-w-0 w-full px-2 py-1.5 text-sm font-semibold text-white bg-white/10 border border-white/30 rounded focus:outline-none focus:ring-1 focus:ring-[#CDF056] break-words resize-none overflow-y-auto leading-snug"
-                      />
-                    ) : (
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (isBookOwner || collaboratorRole === "editor") {
-                            handleChapterTitleEditStart(chapterId, chapter.title || "");
-                          }
-                        }}
-                        className={`flex-1 min-w-0 min-h-[2rem] px-2 py-1.5 text-sm font-semibold text-white hover:bg-[#011b2d]/50 rounded break-words select-none ${(isBookOwner || collaboratorRole === "editor") ? "cursor-text" : ""}`}
-                        title={(isBookOwner || collaboratorRole === "editor") ? "Click to edit" : ""}
-                      >
-                        {chapter.title}
-                      </span>
-                    )}
-                    {chapterId > 0 && (
+            {outline?.parts && outline.parts.length > 0 ? (
+              outline.parts.map((part) => {
+                const partId = part.id ?? -1;
+                const isPartExpanded = partId > 0 ? (expandedParts[partId] ?? true) : true;
+                return (
+                  <div key={`part-${partId}`} className="space-y-1">
+                    <div className="flex items-center gap-2 w-full">
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (!isBookOwner && collaboratorRole !== "editor") return;
-                          handleOpenAssetsModal(undefined, chapterId);
-                        }}
-                        disabled={!isBookOwner && collaboratorRole !== "editor"}
-                        className={`px-2 py-2 rounded transition-colors ${!isBookOwner && collaboratorRole !== "editor"
-                          ? "text-gray-600 opacity-50 cursor-not-allowed"
-                          : "text-gray-400 hover:text-white hover:bg-[#011b2d]/50"
-                          }`}
-                        title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can access assets" : "Chapter Assets"}
+                        onClick={() =>
+                          partId > 0 &&
+                          setExpandedParts((prev) => ({
+                            ...prev,
+                            [partId]: !prev[partId],
+                          }))
+                        }
+                        className="shrink-0 p-1 text-white hover:bg-[#011b2d]/50 rounded"
+                        title="Expand/collapse part"
                       >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                        <svg
+                          className={`w-4 h-4 transition-transform ${isPartExpanded ? "rotate-90" : ""}`}
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                         </svg>
                       </button>
-                    )}
-                  </div>
+                      {editingPartId === partId && partId > 0 && (isBookOwner || collaboratorRole === "editor") ? (
+                        <input
+                          value={editingPartTitleValue}
+                          onChange={(e) => setEditingPartTitleValue(e.target.value)}
+                          onBlur={handlePartTitleSave}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              handlePartTitleSave();
+                            }
+                            if (e.key === "Escape") {
+                              setEditingPartId(null);
+                              setEditingPartTitleValue(part.title || "");
+                            }
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          autoFocus
+                          className="flex-1 min-w-0 px-2 py-1.5 text-sm font-medium text-white bg-white/10 border border-white/30 rounded focus:outline-none focus:ring-1 focus:ring-[#CDF056]"
+                        />
+                      ) : (
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (partId > 0 && (isBookOwner || collaboratorRole === "editor")) {
+                              handlePartTitleEditStart(partId, part.title || "");
+                            }
+                          }}
+                          className={`flex-1 min-w-0 px-2 py-1.5 text-sm font-medium text-gray-300 hover:bg-[#011b2d]/50 rounded break-words select-none ${partId > 0 && (isBookOwner || collaboratorRole === "editor") ? "cursor-text" : ""}`}
+                          title={partId > 0 && (isBookOwner || collaboratorRole === "editor") ? "Click to edit" : ""}
+                        >
+                          {part.title || `Part ${part.order ?? 1}`}
+                        </span>
+                      )}
+                    </div>
 
-                  {isExpanded && (
-                    <div className="ml-6 space-y-1">
-                      {chapter.sections?.map((section, si) => {
-                        const sectionId = section.id ?? -1;
-                        const isSelected =
-                          selectedItem?.type === "section" &&
-                          selectedItem.sectionId === sectionId &&
-                          selectedItem.chapterId === chapterId;
-
+                    {isPartExpanded &&
+                      (part.chapters || []).map((chapter) => {
+                        const chapterId = chapter.id ?? -1;
+                        const isExpanded = expandedChapters[chapterId] ?? false;
                         return (
-                          <div
-                            key={sectionId}
-                            className={`w-full text-left px-3 py-2 text-sm text-white/70 hover:bg-[#CDF056]/5 flex items-center gap-2 ${isSelected ? "bg-[#CDF056]/10 border-l-2 border-[#CDF056]" : ""
-                              }`}
-                          >
-                            <span className="text-xs text-gray-500 shrink-0">{si + 1}</span>
-                            <button
-                              onClick={() => handleSectionClick(chapterId, sectionId, section.title)}
-                              className="flex-1 min-w-0 text-left truncate select-none bg-transparent border-none p-0 cursor-pointer text-inherit hover:bg-transparent"
-                              title="Click to select"
-                            >
-                              {section.title}
-                            </button>
+                          <div key={chapterId} className="ml-4">
+                            <div className="flex items-center gap-2 w-full">
+                              <button
+                                onClick={() =>
+                                  setExpandedChapters((prev) => ({
+                                    ...prev,
+                                    [chapterId]: !prev[chapterId],
+                                  }))
+                                }
+                                className="shrink-0 p-1 text-white hover:bg-[#011b2d]/50 rounded"
+                                title="Expand/collapse"
+                              >
+                                <svg
+                                  className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                </svg>
+                              </button>
+                              {editingChapterId === chapterId && (isBookOwner || collaboratorRole === "editor") ? (
+                                <textarea
+                                  value={editingChapterTitleValue}
+                                  onChange={(e) => setEditingChapterTitleValue(e.target.value)}
+                                  onBlur={handleChapterTitleSave}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      handleChapterTitleSave();
+                                    }
+                                    if (e.key === "Escape") {
+                                      setEditingChapterId(null);
+                                      setEditingChapterTitleValue(chapter.title || "");
+                                    }
+                                    e.stopPropagation();
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  autoFocus
+                                  rows={Math.max(2, Math.min(6, Math.ceil((editingChapterTitleValue.length || 1) / 28) + 1))}
+                                  className="flex-1 min-w-0 w-full px-2 py-1.5 text-sm font-semibold text-white bg-white/10 border border-white/30 rounded focus:outline-none focus:ring-1 focus:ring-[#CDF056] break-words resize-none overflow-y-auto leading-snug"
+                                />
+                              ) : (
+                                <span
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (isBookOwner || collaboratorRole === "editor") {
+                                      handleChapterTitleEditStart(chapterId, chapter.title || "");
+                                    }
+                                  }}
+                                  className={`flex-1 min-w-0 min-h-[2rem] px-2 py-1.5 text-sm font-semibold text-white hover:bg-[#011b2d]/50 rounded break-words select-none ${(isBookOwner || collaboratorRole === "editor") ? "cursor-text" : ""}`}
+                                  title={(isBookOwner || collaboratorRole === "editor") ? "Click to edit" : ""}
+                                >
+                                  {chapter.title}
+                                </span>
+                              )}
+                              {chapterId > 0 && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (!isBookOwner && collaboratorRole !== "editor") return;
+                                    handleOpenAssetsModal(undefined, chapterId);
+                                  }}
+                                  disabled={!isBookOwner && collaboratorRole !== "editor"}
+                                  className={`px-2 py-2 rounded transition-colors ${!isBookOwner && collaboratorRole !== "editor"
+                                    ? "text-gray-600 opacity-50 cursor-not-allowed"
+                                    : "text-gray-400 hover:text-white hover:bg-[#011b2d]/50"
+                                    }`}
+                                  title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can access assets" : "Chapter Assets"}
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+
+                            {isExpanded && (
+                              <div className="ml-6 space-y-1">
+                                {chapter.sections?.map((section, si) => {
+                                  const sectionId = section.id ?? -1;
+                                  const isSelected =
+                                    selectedItem?.type === "section" &&
+                                    selectedItem.sectionId === sectionId &&
+                                    selectedItem.chapterId === chapterId;
+
+                                  return (
+                                    <div
+                                      key={sectionId}
+                                      className={`w-full text-left px-3 py-2 text-sm text-white/70 hover:bg-[#CDF056]/5 flex items-center gap-2 ${isSelected ? "bg-[#CDF056]/10 border-l-2 border-[#CDF056]" : ""
+                                        }`}
+                                    >
+                                      <span className="text-xs text-gray-500 shrink-0">{si + 1}</span>
+                                      <button
+                                        onClick={() => handleSectionClick(chapterId, sectionId, section.title)}
+                                        className="flex-1 min-w-0 text-left truncate select-none bg-transparent border-none p-0 cursor-pointer text-inherit hover:bg-transparent"
+                                        title="Click to select"
+                                      >
+                                        {section.title}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
+                  </div>
+                );
+              })
+            ) : (
+              getAllChapters(outline).map((chapter) => {
+                const chapterId = chapter.id ?? -1;
+                const isExpanded = expandedChapters[chapterId] ?? false;
+                return (
+                  <div key={chapterId}>
+                    <div className="flex items-center gap-2 w-full">
+                      <button
+                        onClick={() =>
+                          setExpandedChapters((prev) => ({
+                            ...prev,
+                            [chapterId]: !prev[chapterId],
+                          }))
+                        }
+                        className="shrink-0 p-1 text-white hover:bg-[#011b2d]/50 rounded"
+                        title="Expand/collapse"
+                      >
+                        <svg
+                          className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                      {editingChapterId === chapterId && (isBookOwner || collaboratorRole === "editor") ? (
+                        <textarea
+                          value={editingChapterTitleValue}
+                          onChange={(e) => setEditingChapterTitleValue(e.target.value)}
+                          onBlur={handleChapterTitleSave}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              handleChapterTitleSave();
+                            }
+                            if (e.key === "Escape") {
+                              setEditingChapterId(null);
+                              setEditingChapterTitleValue(chapter.title || "");
+                            }
+                            e.stopPropagation();
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          autoFocus
+                          rows={Math.max(2, Math.min(6, Math.ceil((editingChapterTitleValue.length || 1) / 28) + 1))}
+                          className="flex-1 min-w-0 w-full px-2 py-1.5 text-sm font-semibold text-white bg-white/10 border border-white/30 rounded focus:outline-none focus:ring-1 focus:ring-[#CDF056] break-words resize-none overflow-y-auto leading-snug"
+                        />
+                      ) : (
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (isBookOwner || collaboratorRole === "editor") {
+                              handleChapterTitleEditStart(chapterId, chapter.title || "");
+                            }
+                          }}
+                          className={`flex-1 min-w-0 min-h-[2rem] px-2 py-1.5 text-sm font-semibold text-white hover:bg-[#011b2d]/50 rounded break-words select-none ${(isBookOwner || collaboratorRole === "editor") ? "cursor-text" : ""}`}
+                          title={(isBookOwner || collaboratorRole === "editor") ? "Click to edit" : ""}
+                        >
+                          {chapter.title}
+                        </span>
+                      )}
+                      {chapterId > 0 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!isBookOwner && collaboratorRole !== "editor") return;
+                            handleOpenAssetsModal(undefined, chapterId);
+                          }}
+                          disabled={!isBookOwner && collaboratorRole !== "editor"}
+                          className={`px-2 py-2 rounded transition-colors ${!isBookOwner && collaboratorRole !== "editor"
+                            ? "text-gray-600 opacity-50 cursor-not-allowed"
+                            : "text-gray-400 hover:text-white hover:bg-[#011b2d]/50"
+                            }`}
+                          title={!isBookOwner && collaboratorRole !== "editor" ? "Only editors can access assets" : "Chapter Assets"}
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
+
+                    {isExpanded && (
+                      <div className="ml-6 space-y-1">
+                        {chapter.sections?.map((section, si) => {
+                          const sectionId = section.id ?? -1;
+                          const isSelected =
+                            selectedItem?.type === "section" &&
+                            selectedItem.sectionId === sectionId &&
+                            selectedItem.chapterId === chapterId;
+
+                          return (
+                            <div
+                              key={sectionId}
+                              className={`w-full text-left px-3 py-2 text-sm text-white/70 hover:bg-[#CDF056]/5 flex items-center gap-2 ${isSelected ? "bg-[#CDF056]/10 border-l-2 border-[#CDF056]" : ""
+                                }`}
+                            >
+                              <span className="text-xs text-gray-500 shrink-0">{si + 1}</span>
+                              <button
+                                onClick={() => handleSectionClick(chapterId, sectionId, section.title)}
+                                className="flex-1 min-w-0 text-left truncate select-none bg-transparent border-none p-0 cursor-pointer text-inherit hover:bg-transparent"
+                                title="Click to select"
+                              >
+                                {section.title}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
           </div>
         </div>
@@ -4178,7 +4449,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
             {/* Editor Content */}
             <div className="flex-1 relative overflow-hidden  bg-gray-100 ">
               {/* Main Talking Points Area */}
-              <div className="h-full overflow-y-auto p-8">
+              <div ref={talkingPointsScrollRef} className="h-full overflow-y-auto p-8">
                 <div className="max-w-3xl mx-auto space-y-6">
                   {selectedSection.talking_points?.map((tp, ti) => {
                     const tpId = tp.id ?? -1;
@@ -4220,6 +4491,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     return (
                       <div
                         key={tpId}
+                        ref={(el) => { tpCardRefs.current[tpId] = el ?? null; }}
+                        data-tp-id={tpId}
                         className="border border-gray-200 rounded-lg p-6 bg-white"
                       >
                         <div className="flex items-center justify-between mb-4">
@@ -4358,6 +4631,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                             onBlur={() => {
                               handleTpBlur(tpId);
                             }}
+                            onFocus={() => setCurrentTalkingPointId(tpId)}
                             placeholder="Start writing or click 'Generate Text' to create content from the talking point..."
                             onTextSelect={(text, position, range, html) => {
                               setSelectedText(text);
@@ -4770,7 +5044,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     const isOldestPending =
                       !isBookOwner || change.status !== "pending" || change.id === oldestPendingId;
                     const changeSectionTitle = (() => {
-                      for (const ch of outline?.chapters || []) {
+                      for (const ch of getAllChapters(outline)) {
                         for (const sec of ch.sections || []) {
                           if (sec.talking_points?.some((tp) => tp.id === change.talking_point)) return sec.title;
                         }
@@ -4802,8 +5076,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                   let targetChapterId: number | null = null;
                                   let targetSectionId: number | null = null;
                                   let targetSectionTitle: string | null = null;
-                                  if (outline?.chapters) {
-                                    for (const chapter of outline.chapters) {
+                                  if (getAllChapters(outline).length > 0) {
+                                    for (const chapter of getAllChapters(outline)) {
                                       for (const section of chapter.sections || []) {
                                         if (section.talking_points?.some((tp) => tp.id === change.talking_point)) {
                                           targetChapterId = chapter.id ?? null;
@@ -5058,7 +5332,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                 <h3 className="text-sm font-semibold text-white mb-1">CHAT</h3>
                 {selectedSection && (
                   <p className="text-xs text-gray-400">
-                    About: {selectedSection.talking_points?.[0]?.text || selectedSection.title || "Current section"}
+                    About: {(currentTalkingPointId && selectedSection.talking_points?.find((tp) => tp.id === currentTalkingPointId)?.text) || selectedSection.talking_points?.[0]?.text || selectedSection.title || "Current section"}
                   </p>
                 )}
               </div>
@@ -5082,7 +5356,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                     >
                       <div
                         className={`max-w-[80%] rounded-lg p-3 text-sm ${msg.from === "user"
-                          ? "bg-[#CDF056] text-white"
+                          ? "bg-[#CDF056] text-[#011b2d]"
                           : "bg-white text-gray-900"
                           }`}
                       >
@@ -5143,7 +5417,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                   <button
                     onClick={() => handleSendChatMessage(false)}
                     disabled={!chatInput.trim() || isChatLoading}
-                    className="px-4 py-2 bg-[#CDF056] text-white rounded-lg hover:bg-[#3bc96d] disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-4 py-2 bg-[#CDF056] text-white rounded-lg hover:bg-[#CDF056]/80 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -5152,17 +5426,43 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                 </div>
                 
                 <button
-                  onClick={(e) => {
+                  onClick={async (e) => {
                     e.preventDefault();
-                    handleSendChatMessage(true);
+                    const activeTpId = currentTalkingPointId ?? selectedSection?.talking_points?.[0]?.id ?? null;
+                    if (!activeTpId || !chatMessages.length || isGeneratingSuggestions) return;
+                    setIsGeneratingSuggestions(true);
+                    try {
+                      const result = await generateChatSuggestions(activeTpId, chatMessages);
+                      if (result.success && result.data) {
+                        setReviewResult({ review_items_found: result.data.review_items_found, suggestions: result.data.suggestions || [] });
+                        setDismissedAiSuggestions(new Set());
+                        setHighlightPreviewMode("ai");
+                        setActiveRightView("review");
+                        notification.success("Suggestions generated from your chat.");
+                      } else {
+                        notification.error(result.error || "Failed to generate suggestions.");
+                      }
+                    } catch (err) {
+                      notification.error("Error generating suggestions. Please try again.");
+                    } finally {
+                      setIsGeneratingSuggestions(false);
+                    }
                   }}
-                  disabled={!chatInput.trim() || isChatLoading}
-                  className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm flex items-center justify-center gap-2"
+                  disabled={!selectedSection || !chatMessages.length || isGeneratingSuggestions}
+                  title="Generate AI Coach suggestions based on your chat for this talking point"
+                  className="w-full px-4 py-2 bg-[#CDF056] text-[#011b2d] rounded-lg hover:bg-[#CDF056]/90 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center justify-center gap-2"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  {isGeneratingSuggestions ? (
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                  ) : (
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                   <path fill="none" stroke="#000000" stroke-width="1.5" d="M18.3482396,15.9535197 C18.7664592,15.0561341 19,14.0553403 19,13 C19,9.13400675 15.8659932,6 12,6 C8.13400675,6 5,9.13400675 5,13 C5,14.1167756 5.2615228,15.1724692 5.72666673,16.1091793 L5.72666673,16.1091793 M12,3 C12.5522847,3 13,2.55228475 13,2 C13,1.44771525 12.5522847,1 12,1 C11.4477153,1 11,1.44771525 11,2 C11,2.55228475 11.4477153,3 12,3 Z M12,23 C12.5522847,23 13,22.5522847 13,22 C13,21.4477153 12.5522847,21 12,21 C11.4477153,21 11,21.4477153 11,22 C11,22.5522847 11.4477153,23 12,23 Z M12,6 L12,3 M9,14 C9.55228475,14 10,13.5522847 10,13 C10,12.4477153 9.55228475,12 9,12 C8.44771525,12 8,12.4477153 8,13 C8,13.5522847 8.44771525,14 9,14 Z M15,14 C15.5522847,14 16,13.5522847 16,13 C16,12.4477153 15.5522847,12 15,12 C14.4477153,12 14,12.4477153 14,13 C14,13.5522847 14.4477153,14 15,14 Z M6,18.9876876 L5,16 C5,16 5.07242747,15.2283988 5.5,15.5 C6.43069361,16.0911921 8.57396448,17 12,17 C15.5536669,17 17.6181635,16.0844828 18.5,15.5 C18.8589052,15.262117 19,16 19,16 L18,18.9876876 C18,18.9876876 17.0049249,20.9999997 12,21 C6.99507512,21.0000003 6,18.9876876 6,18.9876876 Z"/>
                   </svg>
-                  Apply Changes to Content
+                  )}
+                  {isGeneratingSuggestions ? "Generating..." : "Generate suggestions"}
                 </button>
                 
               </div>
@@ -5298,8 +5598,8 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
                                       let targetSectionId: number | null = null;
                                       let targetSectionTitle: string | null = null;
 
-                                      if (outline?.chapters) {
-                                        for (const chapter of outline.chapters) {
+                                      if (getAllChapters(outline).length > 0) {
+                                        for (const chapter of getAllChapters(outline)) {
                                           for (const section of chapter.sections || []) {
                                             for (const tp of section.talking_points || []) {
                                               if (tp.id === suggestion.talking_point_id) {
@@ -5957,7 +6257,7 @@ export default function Editor({ outline, bookId, onOutlineUpdate, isCollaborati
               }`}
             title={collaboratorRole === "viewer" ? "Viewers cannot use chat" : "Chat"}
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           </button>
