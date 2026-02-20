@@ -54,14 +54,26 @@ const SpeechToText = ({ onTranscript, onListeningChange, onError }: Props) => {
       setUserRequestedStop(true);
       onListeningChange(false);
       try {
-        const recognition = SpeechRecognition.getRecognition?.();
-        if (recognition?.abort) {
-          recognition.abort();
-        } else if (SpeechRecognition.abortListening) {
-          SpeechRecognition.abortListening();
+        // Must await - abortListening is async; without await, recording may not stop in production
+        if (SpeechRecognition.abortListening) {
+          await SpeechRecognition.abortListening();
+        } else {
+          const recognition = SpeechRecognition.getRecognition?.();
+          if (recognition?.abort) {
+            recognition.abort();
+          }
         }
       } catch {
-        // Ignore - UI already shows stopped
+        // Fallback: try raw recognition abort/stop
+        try {
+          const recognition = SpeechRecognition.getRecognition?.();
+          if (recognition) {
+            recognition.abort?.();
+            recognition.stop?.();
+          }
+        } catch {
+          // Ignore - UI already shows stopped
+        }
       }
     } else {
       setUserRequestedStop(false);
