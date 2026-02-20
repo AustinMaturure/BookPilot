@@ -40,6 +40,40 @@ const SpeechToText = ({ onTranscript, onListeningChange, onError }: Props) => {
     if (!listening) setUserRequestedStop(false);
   }, [listening]);
 
+  // Stop recording when user leaves the tab (switches tab, minimizes, etc.)
+  useEffect(() => {
+    const stopRecording = async () => {
+      if (!listening) return;
+      setUserRequestedStop(true);
+      onListeningChange(false);
+      try {
+        if (SpeechRecognition.abortListening) {
+          await SpeechRecognition.abortListening();
+        } else {
+          const recognition = SpeechRecognition.getRecognition?.();
+          recognition?.abort?.();
+        }
+      } catch {
+        try {
+          const recognition = SpeechRecognition.getRecognition?.();
+          recognition?.abort?.();
+          recognition?.stop?.();
+        } catch {
+          // Ignore
+        }
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && listening) {
+        stopRecording();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [listening, onListeningChange]);
+
   // Optimistic display: show stopped immediately when user clicks, don't wait for API
   const displayListening = listening && !userRequestedStop;
 
